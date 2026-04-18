@@ -20,6 +20,7 @@ export type { CreateWorktreeOpts, WorktreeInfo } from './worktree.js';
 // Stores get the same namespace treatment so `inbox.add(...)` / `inbox.list()`
 // are unambiguous and won't collide with future store namespaces (queue, plan).
 export * as inbox from './stores/inbox.js';
+export * as queue from './stores/queue.js';
 export {
   ID_REGEX,
   IdSchema,
