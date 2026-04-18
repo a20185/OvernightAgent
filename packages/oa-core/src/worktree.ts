@@ -113,3 +113,45 @@ export async function create(opts: CreateWorktreeOpts): Promise<WorktreeInfo> {
 
   return { absRoot, branch, repoDir: opts.repoDir };
 }
+
+/**
+ * Restores `absRoot`'s worktree to the exact state of its HEAD commit, wiping
+ * any in-progress work. Used as the "clean-state-before-retry" primitive per
+ * ADR-0003: when a step attempt is interrupted or fails verification, we
+ * rewind to the last committed state before retrying. This eliminates
+ * "is this stale work mine?" reasoning failures for the next attempt.
+ *
+ * Performs two git commands, in order:
+ *  1. `git reset --hard HEAD` — discards staged + unstaged modifications to
+ *     tracked files; HEAD itself is NOT moved (we reset TO HEAD, not past it).
+ *  2. `git clean -fdx` — removes untracked files. Flags:
+ *       -f  force (default git config disables clean without it)
+ *       -d  recurse into untracked directories (without this, only files in
+ *           already-tracked dirs are removed)
+ *       -x  also remove files ignored by .gitignore. SAFE per ADR-0003
+ *           because oa-owned worktrees only hold committed work + the failed
+ *           attempt's output; wiping gitignored cruft (node_modules, dist/,
+ *           .next/, etc.) is exactly what a retry wants so it starts fresh.
+ *
+ * Boundary contract:
+ *  - `absRoot` must be absolute (`assertAbs`). This is deliberately the ONLY
+ *    precondition — we don't verify `.git` exists here because simple-git's
+ *    error path already surfaces a clear message, and a redundant check would
+ *    drift from the source of truth.
+ *
+ * Errors from git are wrapped with the worktree path so an operator grepping
+ * supervisor logs can identify which attempt's rewind failed without joining
+ * streams (matches the Task 2.2 `create()` wrapping pattern). The original
+ * error is preserved as `cause`.
+ */
+export async function rewindToHead(absRoot: string): Promise<void> {
+  assertAbs(absRoot);
+  const git = simpleGit(absRoot);
+  try {
+    await git.raw(['reset', '--hard', 'HEAD']);
+    await git.raw(['clean', '-fdx']);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`git rewind failed at ${absRoot}: ${msg}`, { cause: err });
+  }
+}
