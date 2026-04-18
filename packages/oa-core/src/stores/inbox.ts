@@ -42,11 +42,22 @@ const EMPTY_INBOX: Inbox = { schemaVersion: 1, tasks: [] };
  * Loads and validates the inbox file. Returns a fresh empty inbox (with a
  * fresh, mutable `tasks` array) if the file does not yet exist. Throws if
  * the file exists but does not match `InboxSchema`.
+ *
+ * Parse failures are re-thrown with the file path embedded so an operator
+ * who hand-edits `tasks.json` into an invalid shape doesn't have to grep
+ * for which file Zod is complaining about. The original Zod error is
+ * preserved on `cause`.
  */
 async function readInbox(): Promise<Inbox> {
-  const raw = await readJson<unknown>(inboxPath());
+  const p = inboxPath();
+  const raw = await readJson<unknown>(p);
   if (raw === null) return { ...EMPTY_INBOX, tasks: [] };
-  return InboxSchema.parse(raw);
+  try {
+    return InboxSchema.parse(raw);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`inbox file at ${p} is corrupted: ${msg}`, { cause: err });
+  }
 }
 
 /** Returns every inbox entry currently on disk (validated). */
@@ -77,8 +88,13 @@ export async function add(entry: InboxTask): Promise<void> {
 }
 
 /**
- * Updates an existing task's `status`. Throws if no such task exists. Wraps
- * the read-modify-write in `withInboxLock`.
+ * Update an existing task's status. No transition validation —
+ * caller (typically supervisor or CLI) owns lifecycle correctness.
+ * The store accepts any TaskStatus; e.g., `done → pending` is allowed
+ * for manual recovery flows.
+ *
+ * Wraps the read-modify-write in `withInboxLock`. Throws if the task
+ * is not found.
  */
 export async function setStatus(taskId: string, status: TaskStatusT): Promise<void> {
   await withInboxLock(async () => {
@@ -91,8 +107,15 @@ export async function setStatus(taskId: string, status: TaskStatusT): Promise<vo
 }
 
 /**
- * Removes the entry with `taskId`. Throws if no such task exists. Wraps the
- * read-modify-write in `withInboxLock`.
+ * Remove a task entry from the inbox index.
+ *
+ * NOTE: does NOT delete the task's folder at `<oaHome>/tasks/<id>/`.
+ * That folder is owned by Phase 4's intake materializer / Phase 7's
+ * supervisor; cleanup is the caller's responsibility (typically via
+ * `oa archive <id>` which moves the folder to `_archive/`).
+ *
+ * Wraps the read-modify-write in `withInboxLock`. Throws if the task
+ * is not found.
  */
 export async function remove(taskId: string): Promise<void> {
   await withInboxLock(async () => {

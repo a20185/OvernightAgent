@@ -146,4 +146,15 @@ describe('InboxStore', () => {
     expect(all).toHaveLength(1);
     expect(all[0]!.id).toBe(entry.id);
   });
+
+  it('reports the file path when tasks.json is corrupted', async () => {
+    // Sabotage: hand-write an obviously invalid inbox so InboxSchema.parse
+    // fails. The wrapper must include the absolute path of tasks.json in
+    // the thrown message so an operator knows which file to fix.
+    const inboxFile = path.resolve(TMP_HOME, 'tasks.json');
+    await fs.writeFile(inboxFile, JSON.stringify({ tasks: 'not-an-array' }), 'utf8');
+
+    await expect(inbox.list()).rejects.toThrow(inboxFile);
+    await expect(inbox.list()).rejects.toThrow(/corrupted/);
+  });
 });
