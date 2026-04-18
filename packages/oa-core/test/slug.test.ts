@@ -109,4 +109,44 @@ describe('slug', () => {
       expect(slug(input)).toBe(slug(input));
     });
   });
+
+  describe('git refname component safety', () => {
+    // After slug(), output must be either '' (caller falls back to 'untitled')
+    // or a non-empty string of [a-z0-9] chars separated by single '-', with no
+    // leading/trailing '-'. This is a strict subset of git's refname-component
+    // rules, so concatenating as `oa/<slug>-<shortid>` is always git-safe
+    // (provided the empty case is handled by the caller per slug.ts header).
+    const REFNAME_SAFE = /^([a-z0-9]+(-[a-z0-9]+)*)?$/;
+
+    const fuzzInputs = [
+      '',
+      '...',
+      '@{',
+      '.lock',
+      '-leading',
+      'trailing-',
+      'a',
+      'a   '.repeat(20), // long whitespace runs
+      'héllo wörld',
+      'hello 世界 emoji 🚀',
+      '\u200d', // zero-width joiner alone
+      'a\u200db', // ZWJ between letters
+      '../../etc/passwd',
+      'feat: add /something with @{ref} and ~stuff^~?:*[',
+      '!@#$%^&*()',
+      'CamelCaseWithCAPS',
+      'a'.repeat(64), // exceeds cap
+      'snake_case_name',
+      'kebab-case-name',
+      'mixed.dots.and-dashes_and spaces',
+    ];
+
+    for (const input of fuzzInputs) {
+      it(`slug(${JSON.stringify(input).slice(0, 40)}) is refname-safe`, () => {
+        const out = slug(input);
+        expect(out).toMatch(REFNAME_SAFE);
+        expect(out.length).toBeLessThanOrEqual(32);
+      });
+    }
+  });
 });
