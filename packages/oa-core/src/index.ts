@@ -7,3 +7,4 @@ export {
   pidfile,
   socketPath,
 } from './paths.js';
+export { readJson, writeJsonAtomic } from './atomicJson.js';
