@@ -396,4 +396,20 @@ describe('WorktreeManager.commitsSince', () => {
     expect(n).toBe(3);
     expect(typeof n).toBe('number');
   });
+
+  // Phase 6 verify-pipeline confidence: a stale/unknown sha must surface as a
+  // wrapped error (not a silent 0). `deadbeef`x5 is a syntactically valid
+  // SHA-shaped string that won't exist in any history.
+  it('rejects with wrapped error on a stale/unknown sha', async () => {
+    const taskId = newTaskId();
+    const { absRoot } = await create({
+      taskId,
+      repoDir: TMP_REPO,
+      baseBranch: 'main',
+      taskTitle: 'stale sha test',
+    });
+    await expect(
+      commitsSince(absRoot, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'),
+    ).rejects.toThrow(/commitsSince failed/);
+  });
 });

@@ -199,6 +199,10 @@ export async function rewindToHead(absRoot: string): Promise<void> {
  * + `rewindToHead()` wrapping pattern). The original error is preserved as
  * `cause`.
  */
+// TODO(phase-7): if a manual operator-driven archive CLI lands later, consider
+// introducing `removeSafe(info)` rather than adding `opts.force` — keeps the
+// supervisor path branch-free. v0 is force-only by design (supervisor-owned
+// worktrees, archive-on-done semantics).
 export async function remove(info: WorktreeInfo): Promise<void> {
   assertAbs(info.absRoot);
   assertAbs(info.repoDir);
@@ -207,6 +211,13 @@ export async function remove(info: WorktreeInfo): Promise<void> {
   }
   const git = simpleGit(info.repoDir);
   try {
+    // TODO(phase-7): if the supervisor's archive step fails between
+    // worktree-remove and branch-D, a retry currently throws on the first step
+    // (worktree already gone). Make remove() idempotent for partial cleanup by
+    // catching "is not a working tree" / "does not exist" from the
+    // worktree-remove and proceeding to branch deletion. Defer until Phase 7's
+    // archive flow surfaces the failure mode in practice; current bonus test
+    // for double-remove asserts the v0 strict behavior.
     await git.raw(['worktree', 'remove', '--force', info.absRoot]);
     await git.raw(['branch', '-D', info.branch]);
   } catch (err) {
@@ -239,6 +250,12 @@ export async function remove(info: WorktreeInfo): Promise<void> {
  * Returns a real number (parsed via `parseInt(.., 10)`), not a string. Errors
  * from git are wrapped with sha + path context for log-grep parity with the
  * other worktree primitives. The original error is preserved as `cause`.
+ *
+ * NaN guard: if git ever leaks a warning to stdout before the count (rare —
+ * but plumbing-leak bugs do happen), `parseInt('warning...\n0', 10)` returns
+ * `NaN`. NaN compares false to any threshold, so the verify pipeline's
+ * "commit-since-step-start" gate would silently see "no commits" and reject
+ * the step. We throw instead — wrong-answer is worse than a thrown error.
  */
 export async function commitsSince(absRoot: string, sha: string): Promise<number> {
   assertAbs(absRoot);
@@ -248,7 +265,13 @@ export async function commitsSince(absRoot: string, sha: string): Promise<number
   const git = simpleGit(absRoot);
   try {
     const out = await git.raw(['rev-list', `${sha}..HEAD`, '--count']);
-    return parseInt(out.trim(), 10);
+    const n = parseInt(out.trim(), 10);
+    if (!Number.isFinite(n)) {
+      throw new Error(
+        `commitsSince got non-numeric output from git rev-list at ${absRoot} (sha=${sha}): ${JSON.stringify(out)}`,
+      );
+    }
+    return n;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
