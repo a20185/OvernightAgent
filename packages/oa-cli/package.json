@@ -11,7 +11,7 @@
   "scripts": {
     "build": "tsc -p .",
     "dev": "tsx src/cli.ts",
-    "pretest": "tsc -p .",
+    "pretest": "tsc --build . --force",
     "test": "vitest run",
     "lint": "eslint src test",
     "typecheck": "tsc -p . --noEmit"
