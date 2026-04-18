@@ -26,7 +26,8 @@ module.exports = {
   overrides: [
     {
       // Worktree + path-construction modules must wrap path.join() in path.resolve()
-      // to guarantee absolute paths. ADR-0002.
+      // to guarantee absolute paths. Best-effort lint enforcement; runtime
+      // assertAbs() (Task 1.1) is the authoritative contract. See ADR-0002, ADR-0013.
       files: ['**/worktree*.ts', '**/paths*.ts'],
       rules: {
         'no-restricted-syntax': [
@@ -36,6 +37,25 @@ module.exports = {
               "CallExpression[callee.object.name='path'][callee.property.name='join']:not(CallExpression[callee.object.name='path'][callee.property.name='resolve'] > CallExpression[callee.object.name='path'][callee.property.name='join'])",
             message:
               "Use path.resolve(path.join(...)) (or path.resolve directly) so the result is always absolute. See ADR-0002.",
+          },
+        ],
+        'no-restricted-imports': [
+          'error',
+          {
+            paths: [
+              {
+                name: 'path',
+                importNames: ['join'],
+                message:
+                  'Import path as a namespace and wrap path.join in path.resolve. See ADR-0002.',
+              },
+              {
+                name: 'node:path',
+                importNames: ['join'],
+                message:
+                  'Import node:path as a namespace and wrap path.join in path.resolve. See ADR-0002.',
+              },
+            ],
           },
         ],
       },
