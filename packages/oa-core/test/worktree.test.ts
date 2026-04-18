@@ -53,6 +53,9 @@ describe('WorktreeManager.create', () => {
       taskTitle: 'My Cool Task',
     });
     expect(result.absRoot).toBe(expectedAbsRoot);
+    // repoDir is carried through so the persisted artifact is self-contained
+    // (Task 2.4's `remove()` will use it for `git -C <repoDir> branch -D`).
+    expect(result.repoDir).toBe(TMP_REPO);
     // The worktree directory must exist on disk after the git call.
     const stat = await fs.stat(result.absRoot);
     expect(stat.isDirectory()).toBe(true);
@@ -137,10 +140,24 @@ describe('WorktreeManager.create', () => {
     ).rejects.toThrow(/baseBranch/);
   });
 
-  it('surfaces "task id collision" when worktree dir already exists (EEXIST)', async () => {
+  it('rejects non-string taskTitle', async () => {
+    await expect(
+      create({
+        taskId: newTaskId(),
+        repoDir: TMP_REPO,
+        baseBranch: 'main',
+        // @ts-expect-error testing runtime guard against non-string sneaking past TS
+        taskTitle: undefined,
+      }),
+    ).rejects.toThrow(/taskTitle must be a string/);
+  });
+
+  it('surfaces "task id collision" when worktree dir already exists (EEXIST, empty)', async () => {
     const taskId = newTaskId();
     const absRoot = worktreeDir(taskId);
     // Pre-create the worktree directory so the next create() trips EEXIST.
+    // Note: an EMPTY pre-existing dir is the dangerous case — `git worktree
+    // add` would silently colonize it without our pre-check (see worktree.ts).
     await fs.mkdir(absRoot, { recursive: true });
     await expect(
       create({
@@ -152,7 +169,22 @@ describe('WorktreeManager.create', () => {
     ).rejects.toThrow(/task id collision/);
   });
 
-  it('propagates git errors when baseBranch does not exist', async () => {
+  it('surfaces collision error when worktree dir exists and is non-empty', async () => {
+    const taskId = newTaskId();
+    const absRoot = worktreeDir(taskId);
+    await fs.mkdir(absRoot, { recursive: true });
+    await fs.writeFile(path.resolve(absRoot, 'stale-marker'), 'leftover');
+    await expect(
+      create({
+        taskId,
+        repoDir: TMP_REPO,
+        baseBranch: 'main',
+        taskTitle: 'x',
+      }),
+    ).rejects.toThrow(/task id collision/);
+  });
+
+  it('wraps git errors with task/branch context when baseBranch does not exist', async () => {
     await expect(
       create({
         taskId: newTaskId(),
@@ -160,6 +192,6 @@ describe('WorktreeManager.create', () => {
         baseBranch: 'doesnotexist',
         taskTitle: 'x',
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/git worktree add failed for taskId=/);
   });
 });
