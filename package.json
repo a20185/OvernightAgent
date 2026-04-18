@@ -1,0 +1,13 @@
+{
+  "name": "overnight-agent",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "engines": { "node": ">=20" },
+  "packageManager": "pnpm@9.15.4"
+}
