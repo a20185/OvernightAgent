@@ -18,8 +18,5 @@
   },
   "dependencies": {
     "commander": "~14.0.3"
-  },
-  "devDependencies": {
-    "@types/node": "~22.12"
   }
 }
