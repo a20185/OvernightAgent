@@ -67,3 +67,43 @@ describe('per-id path helpers', () => {
     expect(socketPath('p_1')).toBe('/tmp/oa/runs/p_1/oa.sock');
   });
 });
+
+// Regression: every per-id path helper must reject malformed ids before
+// constructing a filesystem path. Without `assertId(...)` at the top of each
+// helper, an attacker (or a buggy caller) could pass `..`, `/etc/passwd`,
+// `a/b`, or `a\x00b` and escape `<oaHome>` via `path.resolve`'s normalization
+// or NUL-byte truncation in syscalls. Carry-forward from Task 1.1 + 1.5
+// reviews; see Task 1.6.
+describe('per-id path helpers reject malformed ids (assertId guard)', () => {
+  beforeEach(() => {
+    process.env.OA_HOME = '/tmp/oa';
+  });
+  afterEach(() => {
+    delete process.env.OA_HOME;
+  });
+
+  const badIds: ReadonlyArray<readonly [string, string]> = [
+    ['/etc/passwd', 'absolute escape'],
+    ['..', 'parent traversal'],
+    ['a/b', 'embedded slash'],
+    ['a\x00b', 'NUL byte'],
+  ];
+
+  for (const [badId, label] of badIds) {
+    it(`taskDir rejects ${label} (${JSON.stringify(badId)})`, () => {
+      expect(() => taskDir(badId)).toThrow(/invalid id/);
+    });
+    it(`runDir rejects ${label} (${JSON.stringify(badId)})`, () => {
+      expect(() => runDir(badId)).toThrow(/invalid id/);
+    });
+    it(`worktreeDir rejects ${label} (${JSON.stringify(badId)})`, () => {
+      expect(() => worktreeDir(badId)).toThrow(/invalid id/);
+    });
+    it(`pidfile rejects ${label} (${JSON.stringify(badId)})`, () => {
+      expect(() => pidfile(badId)).toThrow(/invalid id/);
+    });
+    it(`socketPath rejects ${label} (${JSON.stringify(badId)})`, () => {
+      expect(() => socketPath(badId)).toThrow(/invalid id/);
+    });
+  }
+});

@@ -7,6 +7,8 @@ export {
   pidfile,
   socketPath,
 } from './paths.js';
+export { assertId, newTaskId, newPlanId } from './ids.js';
+export type { IdGeneratorDeps } from './ids.js';
 export { readJson, writeJsonAtomic } from './atomicJson.js';
 export { ensureHomeLayout, DEFAULT_CONFIG } from './home.js';
 export { withInboxLock } from './locks.js';

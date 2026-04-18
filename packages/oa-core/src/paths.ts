@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { assertId } from './ids.js';
 
 /**
  * Asserts that `p` is an absolute path. Throws otherwise.
@@ -27,8 +28,7 @@ export function oaHome(): string {
 
 /** `<oaHome>/tasks/<taskId>`, absolute. */
 export function taskDir(taskId: string): string {
-  // TODO(task-1.6): assertId(taskId) — id validation lands with the ID generator;
-  // until then, callers must pass ids minted by oa-core only.
+  assertId(taskId);
   const p = path.resolve(oaHome(), 'tasks', taskId);
   if (!path.isAbsolute(p)) {
     throw new Error(`taskDir produced non-absolute path: ${p}`);
@@ -38,8 +38,7 @@ export function taskDir(taskId: string): string {
 
 /** `<oaHome>/runs/<planId>`, absolute. */
 export function runDir(planId: string): string {
-  // TODO(task-1.6): assertId(planId) — id validation lands with the ID generator;
-  // until then, callers must pass ids minted by oa-core only.
+  assertId(planId);
   const p = path.resolve(oaHome(), 'runs', planId);
   if (!path.isAbsolute(p)) {
     throw new Error(`runDir produced non-absolute path: ${p}`);
@@ -49,8 +48,7 @@ export function runDir(planId: string): string {
 
 /** `<oaHome>/worktrees/<taskId>`, absolute. */
 export function worktreeDir(taskId: string): string {
-  // TODO(task-1.6): assertId(taskId) — id validation lands with the ID generator;
-  // until then, callers must pass ids minted by oa-core only.
+  assertId(taskId);
   const p = path.resolve(oaHome(), 'worktrees', taskId);
   if (!path.isAbsolute(p)) {
     throw new Error(`worktreeDir produced non-absolute path: ${p}`);
@@ -60,8 +58,7 @@ export function worktreeDir(taskId: string): string {
 
 /** `<runDir>/oa.pid`, absolute. */
 export function pidfile(planId: string): string {
-  // TODO(task-1.6): assertId(planId) — id validation lands with the ID generator;
-  // until then, callers must pass ids minted by oa-core only.
+  assertId(planId);
   const p = path.resolve(runDir(planId), 'oa.pid');
   if (!path.isAbsolute(p)) {
     throw new Error(`pidfile produced non-absolute path: ${p}`);
@@ -79,8 +76,7 @@ export function pidfile(planId: string): string {
  * path doesn't fit. Track in ADR/Phase 7.
  */
 export function socketPath(planId: string): string {
-  // TODO(task-1.6): assertId(planId) — id validation lands with the ID generator;
-  // until then, callers must pass ids minted by oa-core only.
+  assertId(planId);
   const p = path.resolve(runDir(planId), 'oa.sock');
   if (!path.isAbsolute(p)) {
     throw new Error(`socketPath produced non-absolute path: ${p}`);
