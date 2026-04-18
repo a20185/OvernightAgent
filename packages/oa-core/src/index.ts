@@ -9,3 +9,4 @@ export {
 } from './paths.js';
 export { readJson, writeJsonAtomic } from './atomicJson.js';
 export { ensureHomeLayout, DEFAULT_CONFIG } from './home.js';
+export { withInboxLock } from './locks.js';
