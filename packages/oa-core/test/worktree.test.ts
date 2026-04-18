@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { simpleGit } from 'simple-git';
-import { create, rewindToHead } from '../src/worktree.js';
+import { create, rewindToHead, remove, commitsSince } from '../src/worktree.js';
 import { newTaskId, worktreeDir } from '../src/index.js';
 
 /**
@@ -292,5 +292,108 @@ describe('WorktreeManager.rewindToHead', () => {
     expect(status.trim()).toBe('');
     const headAfter = (await git.revparse(['HEAD'])).trim();
     expect(headAfter).toBe(headBefore);
+  });
+});
+
+describe('WorktreeManager.remove', () => {
+  it('rejects relative absRoot via assertAbs', async () => {
+    await expect(
+      remove({ absRoot: 'relative/abs', repoDir: '/abs/repo', branch: 'oa/x-abc123' }),
+    ).rejects.toThrow(/non-absolute path/);
+  });
+
+  it('rejects relative repoDir via assertAbs', async () => {
+    await expect(
+      remove({ absRoot: '/abs/wt', repoDir: 'relative/repo', branch: 'oa/x-abc123' }),
+    ).rejects.toThrow(/non-absolute path/);
+  });
+
+  it('rejects empty branch', async () => {
+    await expect(
+      remove({ absRoot: '/abs/wt', repoDir: '/abs/repo', branch: '' }),
+    ).rejects.toThrow(/branch must be/);
+  });
+
+  it('removes the worktree directory and the branch from the source repo', async () => {
+    const taskId = newTaskId();
+    const info = await create({
+      taskId,
+      repoDir: TMP_REPO,
+      baseBranch: 'main',
+      taskTitle: 'remove test',
+    });
+    // Pre-state: worktree dir exists; branch is in source repo's branch list.
+    await fs.access(info.absRoot);
+    const repoGit = simpleGit(TMP_REPO);
+    const branchesBefore = await repoGit.branch();
+    expect(branchesBefore.all).toContain(info.branch);
+
+    await remove(info);
+
+    // (a) worktree dir removed from disk
+    await expect(fs.access(info.absRoot)).rejects.toThrow();
+    // (b) branch deleted from source repo's branch list
+    const branchesAfter = await repoGit.branch();
+    expect(branchesAfter.all).not.toContain(info.branch);
+  });
+
+  it('wraps git errors with branch/path context when called twice', async () => {
+    const taskId = newTaskId();
+    const info = await create({
+      taskId,
+      repoDir: TMP_REPO,
+      baseBranch: 'main',
+      taskTitle: 'double remove',
+    });
+    await remove(info);
+    // Second call: worktree no longer exists, branch no longer exists — git
+    // will error and we should wrap it with context (the branch + absRoot).
+    await expect(remove(info)).rejects.toThrow(/worktree remove failed/);
+  });
+});
+
+describe('WorktreeManager.commitsSince', () => {
+  it('rejects relative absRoot via assertAbs', async () => {
+    await expect(commitsSince('relative/path', 'abc')).rejects.toThrow(/non-absolute path/);
+  });
+
+  it('rejects empty sha', async () => {
+    await expect(commitsSince('/abs/path', '')).rejects.toThrow(/sha must be/);
+  });
+
+  it('returns 0 for HEAD..HEAD on a fresh worktree', async () => {
+    const taskId = newTaskId();
+    const { absRoot } = await create({
+      taskId,
+      repoDir: TMP_REPO,
+      baseBranch: 'main',
+      taskTitle: 'count head',
+    });
+    expect(await commitsSince(absRoot, 'HEAD')).toBe(0);
+  });
+
+  it('returns N after N new commits in the worktree', async () => {
+    const taskId = newTaskId();
+    const { absRoot } = await create({
+      taskId,
+      repoDir: TMP_REPO,
+      baseBranch: 'main',
+      taskTitle: 'count n',
+    });
+    const git = simpleGit(absRoot);
+    // Worktree-local git config so .commit() doesn't trip on missing identity.
+    await git.addConfig('user.email', 'test@example.com');
+    await git.addConfig('user.name', 'Test');
+    const baseSha = (await git.revparse(['HEAD'])).trim();
+
+    for (let i = 0; i < 3; i++) {
+      await fs.writeFile(path.resolve(absRoot, `file-${i}.txt`), String(i), 'utf8');
+      await git.add('.');
+      await git.commit(`commit ${i}`);
+    }
+
+    const n = await commitsSince(absRoot, baseSha);
+    expect(n).toBe(3);
+    expect(typeof n).toBe('number');
   });
 });

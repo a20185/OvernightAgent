@@ -162,3 +162,98 @@ export async function rewindToHead(absRoot: string): Promise<void> {
     throw new Error(`git rewind failed at ${absRoot}: ${msg}`, { cause: err });
   }
 }
+
+/**
+ * Tears down a worktree created by `create()`: removes the worktree from
+ * git's worktree registry (and deletes its directory on disk) AND deletes the
+ * branch from the source repo. The branch outlives its worktree by default in
+ * git's model, so both steps are needed to fully reclaim the artifact.
+ *
+ * Signature deviation: the Phase 2 plan literally writes `remove(absRoot)`,
+ * but force-deleting the branch requires both the source `repoDir` and the
+ * `branch` name. Task 2.2's S5 review carry-forward added `repoDir` to
+ * `WorktreeInfo` precisely so this primitive could take the full info object
+ * and stay self-contained — no side channels needed to recover the source repo.
+ *
+ * Boundary contract:
+ *  - `info.absRoot` must be absolute (`assertAbs`).
+ *  - `info.repoDir` must be absolute (`assertAbs`).
+ *  - `info.branch` must be a non-empty string.
+ *
+ * Both git commands run in the SOURCE repo (`simpleGit(repoDir)`), not the
+ * worktree — `worktree remove` operates on git's worktree registry which
+ * lives in the source repo's `.git/worktrees/` dir, and `branch -D` likewise
+ * operates on the source repo's branch list.
+ *
+ * Flag rationale:
+ *  - `worktree remove --force` proceeds even when the worktree has
+ *    uncommitted changes or is locked. The supervisor calls this during
+ *    cleanup of completed/failed tasks; refusing to clean up due to dirty
+ *    state would strand artifacts.
+ *  - `branch -D` (capital D) force-deletes branches even if not merged into
+ *    upstream. oa branches are intentionally not merged into the base before
+ *    cleanup — the supervisor decides the merge policy elsewhere.
+ *
+ * Errors from git are wrapped with branch + path context so an operator
+ * grepping logs can identify the offending artifact (matches the `create()`
+ * + `rewindToHead()` wrapping pattern). The original error is preserved as
+ * `cause`.
+ */
+export async function remove(info: WorktreeInfo): Promise<void> {
+  assertAbs(info.absRoot);
+  assertAbs(info.repoDir);
+  if (typeof info.branch !== 'string' || info.branch.length === 0) {
+    throw new Error('branch must be a non-empty string');
+  }
+  const git = simpleGit(info.repoDir);
+  try {
+    await git.raw(['worktree', 'remove', '--force', info.absRoot]);
+    await git.raw(['branch', '-D', info.branch]);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `worktree remove failed for branch=${info.branch} at ${info.absRoot}: ${msg}`,
+      { cause: err },
+    );
+  }
+}
+
+/**
+ * Counts commits reachable from `HEAD` in `absRoot` but not from `sha`. This
+ * is exactly `git rev-list <sha>..HEAD --count`. For a fresh worktree with no
+ * new commits beyond its base, returns `0`. For `sha === 'HEAD'`, returns `0`
+ * (the empty range `HEAD..HEAD`); we don't special-case this because git's
+ * own behavior already produces the correct answer.
+ *
+ * This is the "commit-since-step-start" gate primitive used by the verify
+ * pipeline (Phase 6): a step is considered to have made progress iff at least
+ * one commit landed in the worktree since the step began. The supervisor
+ * captures `HEAD` before invoking the agent and feeds that sha back here.
+ *
+ * Boundary contract:
+ *  - `absRoot` must be absolute (`assertAbs`).
+ *  - `sha` must be a non-empty string. We do NOT validate that it parses as
+ *    a real git object — `git rev-list` will surface that as a wrapped error,
+ *    which is the right place for the diagnostic.
+ *
+ * Returns a real number (parsed via `parseInt(.., 10)`), not a string. Errors
+ * from git are wrapped with sha + path context for log-grep parity with the
+ * other worktree primitives. The original error is preserved as `cause`.
+ */
+export async function commitsSince(absRoot: string, sha: string): Promise<number> {
+  assertAbs(absRoot);
+  if (typeof sha !== 'string' || sha.length === 0) {
+    throw new Error('sha must be a non-empty string');
+  }
+  const git = simpleGit(absRoot);
+  try {
+    const out = await git.raw(['rev-list', `${sha}..HEAD`, '--count']);
+    return parseInt(out.trim(), 10);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `commitsSince failed at ${absRoot} (sha=${sha}): ${msg}`,
+      { cause: err },
+    );
+  }
+}
