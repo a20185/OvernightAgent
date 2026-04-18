@@ -269,6 +269,20 @@ describe('IntakeSchema', () => {
     expect(IntakeSchema.safeParse(intake).success).toBe(false);
   });
 
+  it('rejects a dir reference carrying file-only fields', () => {
+    const intake = validIntake();
+    const refs = intake.references as Array<Record<string, unknown>>;
+    refs[1] = { kind: 'dir', src: '/x', copiedTo: 'r/x' };
+    expect(IntakeSchema.safeParse(intake).success).toBe(false);
+  });
+
+  it('rejects a memory reference carrying dir-only fields', () => {
+    const intake = validIntake();
+    const refs = intake.references as Array<Record<string, unknown>>;
+    refs[2] = { kind: 'memory', src: '/x', sha256: 'abc', gitRepo: '/y' };
+    expect(IntakeSchema.safeParse(intake).success).toBe(false);
+  });
+
   it('accepts an empty references list', () => {
     const intake = validIntake();
     intake.references = [];
@@ -461,8 +475,13 @@ describe('EventSchema', () => {
   it('parses every documented event kind via a smoke matrix', () => {
     // One representative event per kind. Payloads use minimal valid shapes
     // so this test acts as a "no kind was forgotten" tripwire.
-    const taskRef = { taskId: 't_x', stepN: 1, attempt: 1 };
+    //
+    // Names mirror schemas.ts: `stepRef` = task+step (no attempt);
+    // `attemptRef` = task+step+attempt. Don't conflate them — the verify /
+    // attempt-scoped events need `attempt`; the per-step boundary events
+    // (`step.start`, `step.end`) don't.
     const stepRef = { taskId: 't_x', stepN: 1 };
+    const attemptRef = { taskId: 't_x', stepN: 1, attempt: 1 };
     const samples: Array<Record<string, unknown>> = [
       { kind: 'run.start', planId: 'p_x', hostInfo: {} },
       { kind: 'run.stop', reason: 'completed' },
@@ -473,22 +492,22 @@ describe('EventSchema', () => {
       { kind: 'task.bootstrap.end', taskId: 't_x', ok: true },
       { kind: 'task.end', taskId: 't_x', status: 'done' },
       { kind: 'step.start', ...stepRef },
-      { kind: 'step.attempt.start', ...taskRef },
-      { kind: 'step.prompt.written', ...taskRef, promptPath: '/abs/p.md' },
-      { kind: 'step.agent.spawn', ...taskRef },
-      { kind: 'step.agent.exit', ...taskRef, exitCode: 0, durationMs: 10 },
-      { kind: 'step.verify.tail.ok', ...taskRef },
-      { kind: 'step.verify.tail.fail', ...taskRef, reason: 'missing' },
-      { kind: 'step.verify.commit.ok', ...taskRef },
-      { kind: 'step.verify.commit.fail', ...taskRef, reason: 'no commit' },
-      { kind: 'step.verify.cmd.ok', ...taskRef },
-      { kind: 'step.verify.cmd.fail', ...taskRef, exitCode: 1 },
-      { kind: 'step.verify.review.ok', ...taskRef },
-      { kind: 'step.verify.review.fail', ...taskRef, blocking: [] },
-      { kind: 'step.fix.synthesized', ...taskRef },
-      { kind: 'step.timeout', ...taskRef },
-      { kind: 'step.stdoutCapHit', ...taskRef },
-      { kind: 'step.attempt.end', ...taskRef, status: 'done' },
+      { kind: 'step.attempt.start', ...attemptRef },
+      { kind: 'step.prompt.written', ...attemptRef, promptPath: '/abs/p.md' },
+      { kind: 'step.agent.spawn', ...attemptRef },
+      { kind: 'step.agent.exit', ...attemptRef, exitCode: 0, durationMs: 10 },
+      { kind: 'step.verify.tail.ok', ...attemptRef },
+      { kind: 'step.verify.tail.fail', ...attemptRef, reason: 'missing' },
+      { kind: 'step.verify.commit.ok', ...attemptRef },
+      { kind: 'step.verify.commit.fail', ...attemptRef, reason: 'no commit' },
+      { kind: 'step.verify.cmd.ok', ...attemptRef },
+      { kind: 'step.verify.cmd.fail', ...attemptRef, exitCode: 1 },
+      { kind: 'step.verify.review.ok', ...attemptRef },
+      { kind: 'step.verify.review.fail', ...attemptRef, blocking: [] },
+      { kind: 'step.fix.synthesized', ...attemptRef },
+      { kind: 'step.timeout', ...attemptRef },
+      { kind: 'step.stdoutCapHit', ...attemptRef },
+      { kind: 'step.attempt.end', ...attemptRef, status: 'done' },
       { kind: 'step.end', ...stepRef, status: 'done' },
       { kind: 'reference.driftDetected', taskId: 't_x', src: '/abs/p' },
       { kind: 'daemon.signal', signal: 'SIGTERM' },
@@ -501,6 +520,34 @@ describe('EventSchema', () => {
         console.error(`EventSchema rejected kind=${String(s.kind)}:`, r.error.issues);
       }
       expect(r.success).toBe(true);
+    }
+  });
+
+  it('rejects malformed kind-specific fields per variant', () => {
+    // Per-variant negative matrix. The smoke matrix above proves the
+    // discriminator routes to a variant; this proves each variant actually
+    // validates the load-bearing fields it claims to.
+    const attemptRef = { taskId: 't_x', stepN: 1, attempt: 1 };
+    const cases: Array<[string, Record<string, unknown>]> = [
+      // exitCode is z.number().int().nullable() — string must reject.
+      ['step.agent.exit', { ...attemptRef, exitCode: 'nope', durationMs: 1 }],
+      // attempt missing — variant requires attemptRef.
+      ['step.attempt.start', { taskId: 't_x', stepN: 1 }],
+      // ok must be boolean.
+      ['task.bootstrap.end', { taskId: 't_x', ok: 'maybe' }],
+      // status must be a TaskStatus enum value.
+      ['task.end', { taskId: 't_x', status: 'totally-fake' }],
+      // exitCode must be int.
+      ['step.verify.cmd.fail', { ...attemptRef, exitCode: 'x' }],
+      // status must be a StepStatus enum value.
+      ['step.attempt.end', { ...attemptRef, status: 'flubber' }],
+      // src is a required field of the reference.driftDetected variant.
+      ['reference.driftDetected', { taskId: 't_x' }],
+    ];
+    for (const [kind, body] of cases) {
+      const ev = { ts: '2026-04-18T00:00:00Z', kind, ...body };
+      const result = EventSchema.safeParse(ev);
+      expect(result.success, `expected ${kind} to reject`).toBe(false);
     }
   });
 });

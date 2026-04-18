@@ -44,7 +44,9 @@ export const IdSchema = z
 // `budget-exhausted`) are also included so the supervisor can write them.
 // -----------------------------------------------------------------------------
 
-const TaskStatus = z.enum([
+// Enums are exported so Phase 3+ writers can reference them without
+// re-deriving the membership lists. (S2)
+export const TaskStatus = z.enum([
   'draft',
   'pending',
   'queued',
@@ -57,28 +59,36 @@ const TaskStatus = z.enum([
   'budget-exhausted',
 ]);
 
-const PlanStatus = z.enum(['building', 'sealed', 'running', 'done', 'partial', 'stopped']);
+export const PlanStatus = z.enum([
+  'building',
+  'sealed',
+  'running',
+  'done',
+  'partial',
+  'stopped',
+]);
 
-const StepStatus = z.enum(['pending', 'running', 'done', 'failed', 'timeout', 'blocked']);
+export const StepStatus = z.enum(['pending', 'running', 'done', 'failed', 'timeout', 'blocked']);
 
-const AgentId = z.enum(['claude', 'codex', 'opencode']);
+export const AgentId = z.enum(['claude', 'codex', 'opencode']);
 
-const CommitMode = z.enum(['per-step', 'per-taskList']);
-const OnFailure = z.enum(['halt', 'skip', 'markBlocked']);
-const ReviewPriority = z.enum(['P0', 'P1', 'P2']);
+export const CommitMode = z.enum(['per-step', 'per-taskList']);
+export const OnFailure = z.enum(['halt', 'skip', 'markBlocked']);
+export const ReviewPriority = z.enum(['P0', 'P1', 'P2']);
 
 // -----------------------------------------------------------------------------
 // Reusable strategy / config sub-shapes. Lifted out so ConfigSchema's
 // `defaults` and IntakeSchema's `strategy` cannot drift from each other.
+// Exported per S2 so Phase 3+ writers can compose them.
 // -----------------------------------------------------------------------------
 
-const ReviewFixLoopSchema = z.object({
+export const ReviewFixLoopSchema = z.object({
   enabled: z.boolean(),
   maxLoops: z.number().int().nonnegative(),
   blockOn: z.array(ReviewPriority),
 });
 
-const ParallelSchema = z.object({
+export const ParallelSchema = z.object({
   enabled: z.boolean(),
   max: z.number().int().positive(),
 });
@@ -130,11 +140,13 @@ export const ConfigSchema = z.object({
 // validate the directory exists.
 // -----------------------------------------------------------------------------
 
-const InboxTaskSchema = z.object({
+// Tighten `createdAt` to ISO 8601 with offset (`Z` or `±HH:MM`). Cheap guard
+// against `new Date().toString()` instead of `.toISOString()` in writers.
+export const InboxTaskSchema = z.object({
   id: IdSchema,
   title: z.string(),
   status: TaskStatus,
-  createdAt: z.string(), // ISO 8601 — design §3.2 says "..."
+  createdAt: z.iso.datetime({ offset: true }),
   sourceAgent: AgentId,
   projectDir: z.string(),
   folder: z.string(),
@@ -165,31 +177,42 @@ const IntakeStrategySchema = z.object({
 //   dirs that aren't git-tracked; the design example shows them populated.
 // `kind: 'memory'` — agent memory file (e.g. `.claude/.../feedback_x.md`);
 //   hashed for drift detection.
-const ReferenceSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('file'),
-    src: z.string(),
-    copiedTo: z.string(),
-    sha256: z.string(),
-  }),
-  z.object({
-    kind: z.literal('dir'),
-    src: z.string(),
-    gitRepo: z.string().optional(),
-    gitHead: z.string().optional(),
-  }),
-  z.object({
-    kind: z.literal('memory'),
-    src: z.string(),
-    sha256: z.string(),
-  }),
+//
+// Each variant is `.strict()`: the discriminator promises a closed shape per
+// branch, and silently stripping wrong-kind fields (e.g. a `copiedTo` on a
+// `dir` reference) would let Phase 4's materializer ship wrong-kind metadata
+// undetected. Strict mode fails loudly instead.
+export const ReferenceSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('file'),
+      src: z.string(),
+      copiedTo: z.string(),
+      sha256: z.string(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('dir'),
+      src: z.string(),
+      gitRepo: z.string().optional(),
+      gitHead: z.string().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('memory'),
+      src: z.string(),
+      sha256: z.string(),
+    })
+    .strict(),
 ]);
 
 export const IntakeSchema = z.object({
   schemaVersion: z.literal(1),
   id: IdSchema,
   title: z.string(),
-  createdAt: z.string(),
+  createdAt: z.iso.datetime({ offset: true }),
   source: z.object({
     agent: AgentId,
     sessionId: z.string(),
@@ -233,7 +256,7 @@ export const IntakeSchema = z.object({
 // the agent is expected to touch (for verify hints).
 // -----------------------------------------------------------------------------
 
-const StepSchema = z.object({
+export const StepSchema = z.object({
   n: z.number().int().positive(),
   title: z.string(),
   spec: z.string(),
@@ -267,7 +290,7 @@ const PlanOverridesSchema = z
 export const PlanSchema = z.object({
   schemaVersion: z.literal(1),
   id: IdSchema,
-  createdAt: z.string(),
+  createdAt: z.iso.datetime({ offset: true }),
   status: PlanStatus,
   taskListIds: z.array(IdSchema),
   overrides: PlanOverridesSchema,
@@ -290,12 +313,18 @@ export const QueueSchema = z.object({
 // the rest, so the discriminator (`kind`) is strict but the payload can grow
 // without churning this file.
 //
-// Every variant carries `ts: string` (ISO 8601). Step-scoped variants carry
-// `taskId` + `stepN`; per-attempt variants additionally carry `attempt`.
+// Every variant carries `ts` as an ISO 8601 datetime with offset (`Z` or
+// `±HH:MM`). Step-scoped variants carry `taskId` + `stepN`; per-attempt
+// variants additionally carry `attempt`.
+//
+// TODO(phase-7): once the events writer lands and all load-bearing fields are
+// pinned per variant, remove `.passthrough()` and switch to default `strip`
+// (or `.strict()` if we want to fail loudly on writer drift). Track in
+// design §3.6.
 // -----------------------------------------------------------------------------
 
 const EventBase = z.object({
-  ts: z.string(), // ISO 8601 — could tighten to z.iso.datetime() once writer lands.
+  ts: z.iso.datetime({ offset: true }),
 });
 
 // Convenience extenders: avoid repeating the taskId / stepN / attempt blocks
