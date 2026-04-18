@@ -17,6 +17,9 @@ export { withInboxLock } from './locks.js';
 // helpers; callers use `worktree.create(...)`. Types stay flat for ergonomics.
 export * as worktree from './worktree.js';
 export type { CreateWorktreeOpts, WorktreeInfo } from './worktree.js';
+// Stores get the same namespace treatment so `inbox.add(...)` / `inbox.list()`
+// are unambiguous and won't collide with future store namespaces (queue, plan).
+export * as inbox from './stores/inbox.js';
 export {
   ID_REGEX,
   IdSchema,
