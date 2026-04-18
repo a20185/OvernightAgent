@@ -143,6 +143,13 @@ export async function create(opts: CreateWorktreeOpts): Promise<WorktreeInfo> {
  * supervisor logs can identify which attempt's rewind failed without joining
  * streams (matches the Task 2.2 `create()` wrapping pattern). The original
  * error is preserved as `cause`.
+ *
+ * PRECONDITION: The caller (Phase 7 supervisor) must ensure no live process
+ * from a prior attempt retains open file handles under `absRoot` before
+ * calling. On Windows this would cause `git clean -fdx` to fail with EBUSY;
+ * on macOS/Linux it may succeed but leave the orphan process writing into a
+ * zombie path. The supervisor owns process-tree reaping; this primitive does
+ * not enforce or detect it.
  */
 export async function rewindToHead(absRoot: string): Promise<void> {
   assertAbs(absRoot);

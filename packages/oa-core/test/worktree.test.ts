@@ -201,7 +201,7 @@ describe('WorktreeManager.rewindToHead', () => {
     await expect(rewindToHead('relative/path')).rejects.toThrow(/non-absolute path/);
   });
 
-  it('restores a dirty worktree to the last commit (tracked+untracked+gitignored-like)', async () => {
+  it('restores a dirty worktree to the last commit (tracked+untracked+gitignored)', async () => {
     const taskId = newTaskId();
     const { absRoot } = await create({
       taskId,
@@ -209,14 +209,25 @@ describe('WorktreeManager.rewindToHead', () => {
       baseBranch: 'main',
       taskTitle: 'rewind test',
     });
-    // Capture HEAD SHA before dirtying — rewind must NOT move HEAD.
     const gitInWorktree = simpleGit(absRoot);
+
+    // Commit a .gitignore that hides `dist/`. This makes the dist/build.js
+    // assertion below a true witness for the `-x` flag: without `-x`,
+    // `git clean -fd` would skip gitignored entries and dist/build.js would
+    // survive the rewind. Without this commit, `-fd` and `-fdx` are
+    // observationally indistinguishable on this test (review carry-forward).
+    await fs.writeFile(path.resolve(absRoot, '.gitignore'), 'dist/\n', 'utf8');
+    await gitInWorktree.add('.gitignore');
+    await gitInWorktree.commit('add gitignore');
+
+    // Capture HEAD SHA AFTER the gitignore commit (HEAD = the gitignore
+    // commit itself); rewind must NOT move HEAD off this point.
     const headBefore = (await gitInWorktree.revparse(['HEAD'])).trim();
 
     // Dirty the worktree three ways:
     //   1. modify a tracked file
-    //   2. add an untracked file
-    //   3. add a dir of untracked build-output-like junk (exercises -d -x)
+    //   2. add an untracked file (exercises plain clean)
+    //   3. add a gitignored dir of build-output junk (exercises -d AND -x)
     const readmePath = path.resolve(absRoot, 'README.md');
     const origContent = await fs.readFile(readmePath, 'utf8');
     await fs.writeFile(readmePath, 'MODIFIED\n', 'utf8');
@@ -225,7 +236,9 @@ describe('WorktreeManager.rewindToHead', () => {
     await fs.writeFile(path.resolve(absRoot, 'dist/build.js'), 'x', 'utf8');
 
     // Sanity: tree IS dirty before the call — otherwise the assertions below
-    // could pass for the wrong reason.
+    // could pass for the wrong reason. Note: dist/ is gitignored so it
+    // contributes only via the modified README + the untracked txt; that's
+    // still > 0 bytes of porcelain output.
     const statusBefore = await gitInWorktree.raw(['status', '--porcelain']);
     expect(statusBefore.length).toBeGreaterThan(0);
 
@@ -236,9 +249,10 @@ describe('WorktreeManager.rewindToHead', () => {
     expect(statusAfter.trim()).toBe('');
     // (b) tracked file restored
     expect(await fs.readFile(readmePath, 'utf8')).toBe(origContent);
-    // (c) untracked file gone
+    // (c) untracked file gone (-f)
     await expect(fs.access(path.resolve(absRoot, 'new-untracked.txt'))).rejects.toThrow();
-    // (d) untracked dir gone (via -d)
+    // (d) gitignored dir gone — this is the `-x` witness. With `-fd` (no -x)
+    // this assertion would FAIL because `dist/` is ignored.
     await expect(fs.access(path.resolve(absRoot, 'dist/build.js'))).rejects.toThrow();
     // (e) HEAD unchanged — we rewind to HEAD, we do not move it.
     const headAfter = (await gitInWorktree.revparse(['HEAD'])).trim();
@@ -257,5 +271,26 @@ describe('WorktreeManager.rewindToHead', () => {
     const git = simpleGit(absRoot);
     const status = await git.raw(['status', '--porcelain']);
     expect(status.trim()).toBe('');
+  });
+
+  // Pins the create→rewind transition specifically. Similar in spirit to
+  // "no-op on clean worktree" above, but explicitly captures HEAD before/after
+  // to defend against a future regression that might (e.g.) accidentally
+  // call `git reset --hard HEAD~1` instead of `HEAD`.
+  it('is a no-op immediately after create() (fresh worktree)', async () => {
+    const taskId = newTaskId();
+    const { absRoot } = await create({
+      taskId,
+      repoDir: TMP_REPO,
+      baseBranch: 'main',
+      taskTitle: 'fresh',
+    });
+    const git = simpleGit(absRoot);
+    const headBefore = (await git.revparse(['HEAD'])).trim();
+    await expect(rewindToHead(absRoot)).resolves.toBeUndefined();
+    const status = await git.raw(['status', '--porcelain']);
+    expect(status.trim()).toBe('');
+    const headAfter = (await git.revparse(['HEAD'])).trim();
+    expect(headAfter).toBe(headBefore);
   });
 });
