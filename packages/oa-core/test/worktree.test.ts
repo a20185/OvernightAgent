@@ -413,3 +413,46 @@ describe('WorktreeManager.commitsSince', () => {
     ).rejects.toThrow(/commitsSince failed/);
   });
 });
+
+// Meta-test: enumerates EVERY exported method on the worktree namespace and
+// asserts each one rejects relative paths in its path-typed argument(s). The
+// individual methods all have their own per-arg assertion tests above; this
+// systematically prevents a future export from accidentally landing without
+// absolute-path enforcement, OR an accidental removal of an existing
+// `assertAbs` call. Adding a new public method to `worktree.ts` should be a
+// one-line addition to `cases` below; failing to do so is the intended forcing
+// function (this file will need updating, prompting reviewer attention).
+describe('WorktreeManager — every public method rejects relative paths (hardening)', () => {
+  const cases: Array<[string, () => Promise<unknown>]> = [
+    [
+      'create — relative repoDir',
+      () =>
+        create({
+          taskId: newTaskId(),
+          repoDir: 'relative/path',
+          baseBranch: 'main',
+          taskTitle: 'x',
+        }),
+    ],
+    [
+      'rewindToHead — relative absRoot',
+      () => rewindToHead('relative/path'),
+    ],
+    [
+      'remove — relative absRoot',
+      () => remove({ absRoot: 'relative/abs', repoDir: '/abs/repo', branch: 'oa/x-abc123' }),
+    ],
+    [
+      'remove — relative repoDir',
+      () => remove({ absRoot: '/abs/wt', repoDir: 'relative/repo', branch: 'oa/x-abc123' }),
+    ],
+    [
+      'commitsSince — relative absRoot',
+      () => commitsSince('relative/path', 'abc'),
+    ],
+  ];
+
+  it.each(cases)('%s', async (_name, invoke) => {
+    await expect(invoke()).rejects.toThrow(/non-absolute path/);
+  });
+});
