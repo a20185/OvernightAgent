@@ -38,24 +38,11 @@ module.exports = {
             message:
               "Use path.resolve(path.join(...)) (or path.resolve directly) so the result is always absolute. See ADR-0002.",
           },
-        ],
-        'no-restricted-imports': [
-          'error',
           {
-            paths: [
-              {
-                name: 'path',
-                importNames: ['join'],
-                message:
-                  'Import path as a namespace and wrap path.join in path.resolve. See ADR-0002.',
-              },
-              {
-                name: 'node:path',
-                importNames: ['join'],
-                message:
-                  'Import node:path as a namespace and wrap path.join in path.resolve. See ADR-0002.',
-              },
-            ],
+            selector:
+              "ImportDeclaration[source.value=/^(node:)?path$/] > ImportSpecifier[imported.name='join']",
+            message:
+              "Don't destructure `join` from path; import the namespace and wrap path.join in path.resolve. See ADR-0002.",
           },
         ],
       },

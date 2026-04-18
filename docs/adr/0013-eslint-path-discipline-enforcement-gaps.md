@@ -8,25 +8,31 @@
 ## Context
 
 ADR-0002 mandates absolute paths in all worktree-touching code. To make that
-discipline visible at lint time, Task 0.2 added two scoped rules to
-`.eslintrc.cjs`, applied only to files matching `**/worktree*.ts` and
-`**/paths*.ts`:
+discipline visible at lint time, `.eslintrc.cjs` carries two scoped
+`no-restricted-syntax` selectors, both applied only to files matching
+`**/worktree*.ts` and `**/paths*.ts`:
 
-1. `no-restricted-syntax` — flags `CallExpression[callee.object.name='path'][callee.property.name='join']`
+1. **Bare `path.join` selector** —
+   `CallExpression[callee.object.name='path'][callee.property.name='join']`
    that is not the immediate child of a `path.resolve(...)` call.
-2. `no-restricted-imports` — flags `import { join } from 'path'` and
-   `import { join } from 'node:path'`.
+2. **Destructured-`join` import selector** —
+   `ImportDeclaration[source.value=/^(node:)?path$/] > ImportSpecifier[imported.name='join']`,
+   which catches `import { join } from 'path'` / `import { join } from 'node:path'`.
 
-The Task 0.2 review confirmed empirically that the AST selector has documented
-escape hatches:
+A first iteration used `no-restricted-imports` with `importNames: ['join']` to
+cover the destructured case. That was wrong: `no-restricted-imports`'
+`importNames` matches both named *and namespace* imports, so it would have
+errored on `import * as path from 'node:path'` — the very pattern ADR-0002
+recommends. Replacing it with a second `no-restricted-syntax` selector targeted
+at `ImportSpecifier` only matches the destructured form and leaves namespace
+imports alone.
 
-- **Destructured import:** `import { join } from 'path'; join(a, b)` — bypasses
-  the `no-restricted-syntax` selector because the call site has no `path.`
-  prefix. (Now caught by the added `no-restricted-imports`.)
+The selectors are best-effort. The following bypasses are documented and
+accepted as out of scope for static lint:
+
 - **Namespace rename:** `import * as nodePath from 'node:path'; nodePath.join(...)`
-  — bypasses both rules. The `no-restricted-syntax` selector hard-codes
-  `callee.object.name='path'`; matching every possible alias would require a
-  custom rule that tracks bindings.
+  — bypasses selector 1, which hard-codes `callee.object.name='path'`. Matching
+  every possible alias would require a custom rule that tracks bindings.
 - **Computed property access:** `(path as any)['join'](a, b)` — different AST
   shape (`MemberExpression` with computed `Literal`/`Identifier` rather than
   the dotted form). Reaches a different selector entirely.
@@ -37,11 +43,14 @@ require a real custom ESLint rule shipped as a plugin package.
 
 ## Decision
 
-Lint enforcement of the absolute-path rule is **best-effort**, intentionally
-covering only the obvious accidental mistakes:
+Lint enforcement of the absolute-path rule is **best-effort**, implemented
+solely via two `no-restricted-syntax` selectors and intentionally covering
+only the obvious accidental mistakes:
 
-- bare `path.join(...)` in the `path.<method>` namespace style, and
-- destructured `join` import from `path` / `node:path`.
+- bare `path.join(...)` in the `path.<method>` namespace style not wrapped
+  in `path.resolve(...)`, and
+- destructured `join` import from `path` / `node:path` (matched at the
+  `ImportSpecifier` AST node, so namespace imports are not affected).
 
 The **authoritative contract** is the runtime `assertAbs()` helper (planned in
 Task 1.1) that guards every path-receiving public API at the boundary of the
@@ -92,9 +101,19 @@ are caught by the runtime guard.
 ## Notes
 
 - This ADR is the formal record of the deferral noted in the Task 0.2
-  code-quality review. Task 0.2's commit `0422187` shipped the initial
-  `no-restricted-syntax` rule; the follow-up commit hardens it with
-  `no-restricted-imports` and lands this ADR.
+  code-quality review. Task 0.2's commit `0422187` shipped the initial bare
+  `path.join` selector. A follow-up (`c04b5ec`) added a `no-restricted-imports`
+  block and this ADR; that approach was retracted in the next commit because
+  `importNames` also matches namespace imports and would have flagged the
+  ADR-recommended `import * as path from 'node:path'`. The current mechanism
+  is two `no-restricted-syntax` selectors only — no `no-restricted-imports`.
+- **Validation:** the rule was verified empirically with three fixture files
+  (`paths-good.ts`, `paths-bad-bare-join.ts`, `paths-bad-destructured.ts`)
+  symlinked into a temporary `packages/_probe/src/` so that the override's
+  project-relative `**/paths*.ts` glob matches. `pnpm exec eslint` was run
+  against each fixture; the good file exited 0, both bad files emitted the
+  expected `no-restricted-syntax` error from the corresponding selector. The
+  probe directory was removed before commit.
 - The runtime `assertAbs()` helper specified in Task 1.1 is the actual
   contract and must be called at every public path-accepting boundary in
   the worktree/paths/supervisor layers.
