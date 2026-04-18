@@ -10,15 +10,10 @@ import { oaHome } from './paths.js';
  *   spec's "5s wait + 100ms retry" budget.
  * - `stale=10s` lets `proper-lockfile` reclaim a lock whose owner crashed.
  *   Tune later if real workloads need a different threshold.
- * - `realpath: false` is required because the lock target
- *   (`<oaHome>/tasks.json.lock`) does not exist before `lock()` runs and
- *   `proper-lockfile`'s default `realpath: true` would `fs.realpath` it
- *   and fail with ENOENT.
- *
- * `lockfilePath` points at the same path as the lock target. We pass an
- * existing sentinel file as the first argument (created on demand below)
- * so `proper-lockfile` is happy and the lock directory it actually places
- * is the canonical `<oaHome>/tasks.json.lock`.
+ * - `realpath: false` skips `fs.realpath` on the lock target. The target may
+ *   not exist when `lock()` runs (proper-lockfile creates the `<target>.lock`
+ *   directory, not the target itself), and `realpath` would otherwise
+ *   ENOENT-fail before `mkdir` ever happens.
  */
 const LOCK_OPTS = {
   retries: { retries: 49, minTimeout: 100, maxTimeout: 100, factor: 1 },
@@ -42,23 +37,22 @@ function inboxLockPath(): string {
  * `proper-lockfile` rejects with `ELOCKED` and the rejection bubbles to the
  * caller.
  *
- * The caller is responsible for ensuring `oaHome()` exists (run
- * `ensureHomeLayout()` once at startup — see Task 1.3).
+ * Callers should ensure `oaHome()` exists once at startup via
+ * `ensureHomeLayout()` (Task 1.3). We still `mkdir` the parent here as
+ * defense-in-depth: tests bypass `ensureHomeLayout`, and a stale-init
+ * scenario could race with a concurrent home-layout teardown.
+ *
+ * NOTE on the lock-target file: proper-lockfile@4.1.2's `acquireLock` calls
+ * `fs.mkdir(<target>.lock)` directly (lockfile.js:25-82) and does NOT stat
+ * the target. With `realpath: false`, `resolveCanonicalPath` is a pure
+ * `path.resolve` (lockfile.js:16-18). We therefore do not need to touch a
+ * sentinel file before locking. If a future proper-lockfile version
+ * reintroduces a target-stat probe, this comment will go stale and tests
+ * will surface the regression.
  */
 export async function withInboxLock<T>(fn: () => Promise<T>): Promise<T> {
   const lockTarget = inboxLockPath();
-  // `proper-lockfile.lock(file)` requires `file` to exist on disk (with
-  // `realpath: false` it's still `stat`-ed for the inode check). The lock
-  // target itself is a sentinel — its contents are irrelevant — so create
-  // it on demand if missing.
   await fs.mkdir(path.dirname(lockTarget), { recursive: true });
-  try {
-    const fh = await fs.open(lockTarget, 'a');
-    await fh.close();
-  } catch {
-    // Best-effort: if the touch fails, let `lockfile.lock` surface the
-    // real error below.
-  }
   const release = await lockfile.lock(lockTarget, LOCK_OPTS);
   try {
     return await fn();
