@@ -8,3 +8,4 @@ export {
   socketPath,
 } from './paths.js';
 export { readJson, writeJsonAtomic } from './atomicJson.js';
+export { ensureHomeLayout, DEFAULT_CONFIG } from './home.js';
