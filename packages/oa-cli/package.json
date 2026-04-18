@@ -5,10 +5,21 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "oa": "./dist/cli.js"
+  },
   "scripts": {
     "build": "tsc -p .",
+    "dev": "tsx src/cli.ts",
+    "pretest": "tsc -p .",
     "test": "vitest run",
     "lint": "eslint src test",
     "typecheck": "tsc -p . --noEmit"
+  },
+  "dependencies": {
+    "commander": "~14.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "~22.12"
   }
 }

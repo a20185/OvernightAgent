@@ -8,9 +8,12 @@
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck"
   },
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "packageManager": "pnpm@9.15.4",
   "devDependencies": {
+    "@types/node": "~22.12.0",
     "@typescript-eslint/eslint-plugin": "~8.58.0",
     "@typescript-eslint/parser": "~8.58.0",
     "@vitest/coverage-v8": "~4.1.0",
