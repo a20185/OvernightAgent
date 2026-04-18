@@ -13,6 +13,10 @@ export { slug, DEFAULT_MAX_LENGTH } from './slug.js';
 export { readJson, writeJsonAtomic } from './atomicJson.js';
 export { ensureHomeLayout, DEFAULT_CONFIG } from './home.js';
 export { withInboxLock } from './locks.js';
+// Namespaced re-export so `create` doesn't collide with future top-level
+// helpers; callers use `worktree.create(...)`. Types stay flat for ergonomics.
+export * as worktree from './worktree.js';
+export type { CreateWorktreeOpts, WorktreeInfo } from './worktree.js';
 export {
   ID_REGEX,
   IdSchema,
