@@ -27,35 +27,63 @@ export function oaHome(): string {
 
 /** `<oaHome>/tasks/<taskId>`, absolute. */
 export function taskDir(taskId: string): string {
+  // TODO(task-1.6): assertId(taskId) — id validation lands with the ID generator;
+  // until then, callers must pass ids minted by oa-core only.
   const p = path.resolve(oaHome(), 'tasks', taskId);
-  assertAbs(p);
+  if (!path.isAbsolute(p)) {
+    throw new Error(`taskDir produced non-absolute path: ${p}`);
+  }
   return p;
 }
 
 /** `<oaHome>/runs/<planId>`, absolute. */
 export function runDir(planId: string): string {
+  // TODO(task-1.6): assertId(planId) — id validation lands with the ID generator;
+  // until then, callers must pass ids minted by oa-core only.
   const p = path.resolve(oaHome(), 'runs', planId);
-  assertAbs(p);
+  if (!path.isAbsolute(p)) {
+    throw new Error(`runDir produced non-absolute path: ${p}`);
+  }
   return p;
 }
 
 /** `<oaHome>/worktrees/<taskId>`, absolute. */
 export function worktreeDir(taskId: string): string {
+  // TODO(task-1.6): assertId(taskId) — id validation lands with the ID generator;
+  // until then, callers must pass ids minted by oa-core only.
   const p = path.resolve(oaHome(), 'worktrees', taskId);
-  assertAbs(p);
+  if (!path.isAbsolute(p)) {
+    throw new Error(`worktreeDir produced non-absolute path: ${p}`);
+  }
   return p;
 }
 
 /** `<runDir>/oa.pid`, absolute. */
 export function pidfile(planId: string): string {
+  // TODO(task-1.6): assertId(planId) — id validation lands with the ID generator;
+  // until then, callers must pass ids minted by oa-core only.
   const p = path.resolve(runDir(planId), 'oa.pid');
-  assertAbs(p);
+  if (!path.isAbsolute(p)) {
+    throw new Error(`pidfile produced non-absolute path: ${p}`);
+  }
   return p;
 }
 
-/** `<runDir>/oa.sock`, absolute. */
+/**
+ * `<runDir>/oa.sock`, absolute.
+ *
+ * NOTE: AF_UNIX socket paths are limited to 104 bytes on macOS and 108 on
+ * Linux. If `oaHome()` is deep (long username, custom OA_HOME), the resolved
+ * path may exceed the limit and `bind()` will fail with ENAMETOOLONG. Phase 7
+ * (supervisor) must fall back to a short path under /tmp when the canonical
+ * path doesn't fit. Track in ADR/Phase 7.
+ */
 export function socketPath(planId: string): string {
+  // TODO(task-1.6): assertId(planId) — id validation lands with the ID generator;
+  // until then, callers must pass ids minted by oa-core only.
   const p = path.resolve(runDir(planId), 'oa.sock');
-  assertAbs(p);
+  if (!path.isAbsolute(p)) {
+    throw new Error(`socketPath produced non-absolute path: ${p}`);
+  }
   return p;
 }
