@@ -32,6 +32,12 @@ export * as references from './intake/references.js';
 export type { ReferenceInput, MaterializedRef } from './intake/references.js';
 // HANDOFF.md generator: pure renderer consumed by Phase 4.4 (intakeSubmit).
 export * as handoff from './intake/handoff.js';
+// intakeSubmit — Phase 4.4 end-to-end. Namespaced (`submit.intakeSubmit(...)`)
+// to mirror the per-helper namespacing used elsewhere in the intake module
+// and keep the top-level surface uncluttered. Types re-exported flat for
+// ergonomics at call sites.
+export * as submit from './intake/submit.js';
+export type { IntakeSubmitInput, IntakeSubmitResult } from './intake/submit.js';
 export {
   ID_REGEX,
   IdSchema,
