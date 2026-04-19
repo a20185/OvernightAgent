@@ -1,0 +1,668 @@
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+import { simpleGit } from 'simple-git';
+import { writeFileAtomic } from '../atomicJson.js';
+import { runDir, taskDir } from '../paths.js';
+import { readJson } from '../atomicJson.js';
+import {
+  IntakeSchema,
+  StepsSchema,
+  type Intake,
+  type Steps,
+  type Step,
+  type OaReviewIssue,
+  type StepStatusT,
+  type TaskStatusT,
+} from '../schemas.js';
+import * as inbox from '../stores/inbox.js';
+import * as plan from '../stores/plan.js';
+import * as worktree from '../worktree.js';
+import * as progress from '../state/progress.js';
+import * as findings from '../state/findings.js';
+import * as context from '../verify/context.js';
+import * as verifyGates from '../verify/gates.js';
+import * as review from '../verify/review.js';
+import { synthesizeFixContext } from '../verify/fixLoop.js';
+import { parseTail } from '../verify/tail.js';
+import { runBootstrap } from './bootstrap.js';
+import { openEventWriter, type EventWriter } from '../events/writer.js';
+import type { AgentAdapter } from '../adapter/types.js';
+
+/**
+ * Task 7.3 — Supervisor outer loop (sequential v0).
+ *
+ * `runPlan` is the production glue between every Phase 1–7 piece. Given a sealed
+ * planId it:
+ *
+ *   1. loads the plan + every per-task intake/steps,
+ *   2. opens `<runDir>/events.jsonl` (Task 7.1),
+ *   3. for each task, in order: creates a worktree (Task 2.2), runs bootstrap
+ *      (Task 7.2), then for each step iterates the inner-loop (the Phase 6
+ *      reference shape: assemblePrompt → adapter.run → verifyTail → verifyCommit
+ *      → verifyCmd → reviewer → maybe-fix-loop) until the step lands or the
+ *      attempt budget runs out,
+ *   4. mutates PROGRESS / FINDINGS via the Task 6.5 helpers,
+ *   5. emits the design §3.6 event taxonomy at every transition,
+ *   6. propagates outcomes upward: per-attempt → per-step → per-task → per-plan.
+ *
+ * Carry-forwards from prior reviews + the plan brief:
+ *
+ *   - **Per-attempt rewindToHead** (ADR-0003). Attempts > 1 wipe the worktree
+ *     to `stepStartSha` BEFORE the next assemblePrompt → run, so the agent
+ *     starts from a clean slate. We pre-stamp the prompt's "this is a retry"
+ *     status note via the `isRetry` flag in `assemblePrompt`.
+ *   - **Tail-fail short-circuits before reviewer**. The reviewer is the
+ *     single most expensive call in the loop — if the worker didn't even emit
+ *     a tail block, we don't pay for review feedback that won't help.
+ *   - **stepStartSha captured ONCE per step**. The fix-loop's "what changed
+ *     this step" diff is anchored at the step's first attempt, not each
+ *     attempt's HEAD — otherwise rewind would reset the diff base and the
+ *     reviewer would always see an empty diff after rewind.
+ *   - **One AbortSignal per step**. Each adapter.run gets a fresh AbortController
+ *     wired to the supervisor's signal so the supervisor's abort cleanly tears
+ *     down whatever's currently spawning, and a step-local timeout (future
+ *     work) won't kill the next step's spawn.
+ *   - **Per-attempt issue history** is captured implicitly via per-attempt
+ *     `step.attempt.start` / `step.verify.review.fail` events; the events.jsonl
+ *     is the source of truth for the post-mortem renderer.
+ *   - **Bootstrap distinguishes 3 outcomes** via `runBootstrap`'s typed result
+ *     (success / timeout / non-zero exit). On any non-success the task is
+ *     marked `bootstrap-failed` and per-task onFailure decides whether to halt
+ *     the plan or continue.
+ *   - **Adapter resolution via injection**. Per the brief, v0 takes
+ *     `workerAdapterFactory(agentId)` / `reviewerAdapterFactory(agentId)`; the
+ *     production registry wiring lands in Task 7.7.
+ *
+ * No background processes, no parallelism — sequential v0. Parallel mode lands
+ * in Phase 8+ once the sequential outer loop has shipped and the per-task
+ * isolation invariants are pinned by tests.
+ */
+
+export interface RunPlanOpts {
+  planId: string;
+  signal: AbortSignal;
+  /** v0 adapter resolution: caller supplies a factory by agentId.
+   *  Task 7.7 will route this through the registry from intake.executor.agent. */
+  workerAdapterFactory: (agentId: string) => AgentAdapter;
+  reviewerAdapterFactory: (agentId: string) => AgentAdapter;
+  /** Override of `<runDir(planId)>/events.jsonl`. Tests use this rarely; prod never. */
+  eventsPath?: string;
+}
+
+export type PlanOutcome = 'done' | 'partial' | 'stopped' | 'budget-exhausted';
+export type TaskOutcome =
+  | 'done'
+  | 'failed'
+  | 'blocked-needs-human'
+  | 'bootstrap-failed'
+  | 'budget-exhausted';
+
+export interface RunPlanResult {
+  planId: string;
+  outcome: PlanOutcome;
+  taskOutcomes: Array<{ taskId: string; outcome: TaskOutcome; stepsRun: number }>;
+  durationMs: number;
+}
+
+// `step.end` carries the step's final status. We map per-attempt outcomes onto
+// the StepStatusT enum so callers (PROGRESS.md, events.jsonl, the per-task
+// aggregator below) all read the same vocabulary.
+type StepOutcome = 'done' | 'failed' | 'blocked';
+
+interface StepRunResult {
+  outcome: StepOutcome;
+  attemptsRun: number;
+  /** Issues from the LAST reviewer pass, surfaced into events for post-mortem. */
+  finalReviewIssues: OaReviewIssue[];
+}
+
+/** Read + Zod-validate a per-task intake.json. Throws on missing/corrupt. */
+async function loadIntake(taskFolder: string): Promise<Intake> {
+  const p = path.resolve(taskFolder, 'intake.json');
+  const raw = await readJson<unknown>(p);
+  if (raw === null) throw new Error(`intake.json not found: ${p}`);
+  try {
+    return IntakeSchema.parse(raw);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`intake.json at ${p} is corrupted: ${msg}`, { cause: err });
+  }
+}
+
+/** Read + Zod-validate a per-task steps.json. */
+async function loadSteps(taskFolder: string): Promise<Steps> {
+  const p = path.resolve(taskFolder, 'steps.json');
+  const raw = await readJson<unknown>(p);
+  if (raw === null) throw new Error(`steps.json not found: ${p}`);
+  try {
+    return StepsSchema.parse(raw);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`steps.json at ${p} is corrupted: ${msg}`, { cause: err });
+  }
+}
+
+/** Per-attempt log/prompt directory: `<runDir>/steps/<taskId>/<n>/<attempt>`. */
+function attemptDir(runDirAbs: string, taskId: string, n: number, attempt: number): string {
+  return path.resolve(runDirAbs, 'steps', taskId, String(n), String(attempt));
+}
+
+/** Read HEAD sha of a worktree. */
+async function headSha(absRoot: string): Promise<string> {
+  const g = simpleGit(absRoot);
+  return (await g.revparse(['HEAD'])).trim();
+}
+
+/**
+ * Run a single step's inner loop. Mirrors the shape of Task 6.7's reference
+ * helper, but emits Phase 7 events at every transition and uses the production
+ * I/O surfaces (per-attempt prompt files on disk under `<runDir>/steps/...`,
+ * one AbortController per adapter.run, per-attempt rewindToHead).
+ */
+async function runStep(
+  taskId: string,
+  step: Step,
+  intake: Intake,
+  workerAdapter: AgentAdapter,
+  reviewerAdapter: AgentAdapter,
+  worktreeInfo: { absRoot: string; branch: string },
+  reviewerPromptPath: string,
+  runDirAbs: string,
+  taskFolder: string,
+  events: EventWriter,
+  parentSignal: AbortSignal,
+): Promise<StepRunResult> {
+  // stepStartSha is captured ONCE at step start. Per-attempt rewind restores
+  // the worktree TO this sha; the reviewer's diff is `stepStartSha..HEAD`,
+  // which after a successful attempt N is the N-th attempt's commit set.
+  const stepStartSha = await headSha(worktreeInfo.absRoot);
+
+  await events.emit({ kind: 'step.start', taskId, stepN: step.n });
+
+  const maxLoops = intake.strategy.reviewFixLoop.maxLoops > 0 ? intake.strategy.reviewFixLoop.maxLoops : 1;
+  const blockOn = intake.strategy.reviewFixLoop.blockOn;
+
+  let prevIssues: OaReviewIssue[] | undefined;
+  let lastReviewIssues: OaReviewIssue[] = [];
+  let attempt = 0;
+  let stepOutcome: StepOutcome = 'failed';
+
+  while (attempt < maxLoops) {
+    attempt += 1;
+
+    // ADR-0003: rewind worktree to HEAD (== stepStartSha after a previous
+    // attempt's commits got rewound) BEFORE attempts > 1. The first attempt
+    // has nothing to rewind. We rewind to `stepStartSha` explicitly via
+    // `git reset --hard <sha>` rather than `HEAD` because a prior attempt
+    // already moved HEAD forward; rewindToHead resets to current HEAD which
+    // is the WRONG sha for a fix-loop iteration. Use git directly here.
+    if (attempt > 1) {
+      const g = simpleGit(worktreeInfo.absRoot);
+      try {
+        await g.raw(['reset', '--hard', stepStartSha]);
+        await g.raw(['clean', '-fdx']);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`rewind failed at ${worktreeInfo.absRoot}: ${msg}`, { cause: err });
+      }
+    }
+
+    await progress.mark(taskFolder, step.n, 'running', `attempt ${String(attempt)}`);
+
+    const dir = attemptDir(runDirAbs, taskId, step.n, attempt);
+    await fs.mkdir(dir, { recursive: true });
+    const promptPath = path.resolve(dir, 'prompt.md');
+    const stdoutPath = path.resolve(dir, 'stdout.log');
+    const stderrPath = path.resolve(dir, 'stderr.log');
+    const reviewerStdoutPath = path.resolve(dir, 'reviewer.stdout.log');
+    const reviewerStderrPath = path.resolve(dir, 'reviewer.stderr.log');
+
+    // Read the latest progress + findings so the prompt is current. Both
+    // helpers tolerate missing files (return ''/empty doc) so a brand-new
+    // task folder doesn't need to seed them.
+    const handoffText = await fs
+      .readFile(path.resolve(taskFolder, 'HANDOFF.md'), 'utf8')
+      .catch(() => '');
+    const progressMd = await fs
+      .readFile(path.resolve(taskFolder, 'PROGRESS.md'), 'utf8')
+      .catch(() => '');
+    const findingsMd = await findings.read(taskFolder);
+
+    const promptText = context.assemblePrompt({
+      handoff: handoffText,
+      progress: progressMd,
+      findings: findingsMd,
+      stepSpec: step,
+      gitContext: {
+        branch: worktreeInfo.branch,
+        headSha: await headSha(worktreeInfo.absRoot),
+        isClean: true,
+      },
+      references: intake.references,
+      openReviewIssues: prevIssues,
+      isRetry: attempt > 1,
+    });
+    await writeFileAtomic(promptPath, promptText);
+    await events.emit({
+      kind: 'step.prompt.written',
+      taskId,
+      stepN: step.n,
+      attempt,
+      promptPath,
+    });
+
+    await events.emit({ kind: 'step.attempt.start', taskId, stepN: step.n, attempt });
+
+    // Per-step abort controller chained off the parent signal. This lets a
+    // future per-step timeout fire its own abort without nuking later steps,
+    // and keeps the parent's user-driven abort propagating cleanly.
+    const stepAc = new AbortController();
+    const onParentAbort = (): void => stepAc.abort();
+    parentSignal.addEventListener('abort', onParentAbort, { once: true });
+    if (parentSignal.aborted) stepAc.abort();
+
+    let workerResult;
+    const workerStart = Date.now();
+    try {
+      workerResult = await workerAdapter.run({
+        cwd: worktreeInfo.absRoot,
+        promptPath,
+        model: intake.executor.model,
+        extraArgs: intake.executor.extraArgs,
+        timeoutSec: intake.strategy.stepTimeoutSec,
+        stdoutCapBytes: intake.strategy.stepStdoutCapBytes,
+        stdoutPath,
+        stderrPath,
+        signal: stepAc.signal,
+      });
+    } finally {
+      parentSignal.removeEventListener('abort', onParentAbort);
+    }
+    await events.emit({
+      kind: 'step.agent.exit',
+      taskId,
+      stepN: step.n,
+      attempt,
+      exitCode: workerResult.exitCode,
+      durationMs: workerResult.durationMs > 0 ? workerResult.durationMs : Date.now() - workerStart,
+      ...(workerResult.sessionId !== undefined ? { sessionId: workerResult.sessionId } : {}),
+      ...(workerResult.killedBy !== null ? { killedBy: workerResult.killedBy } : {}),
+    });
+
+    // If the adapter was killed (timeout / cap / parent signal), treat as a
+    // tail failure for v0 — the agent didn't get to emit a tail block. The
+    // supervisor's reaction is the same: short-circuit, mark step failed,
+    // exit attempt loop. Distinct events surface the killer for post-mortem.
+    if (workerResult.killedBy) {
+      await events.emit({
+        kind: 'step.verify.tail.fail',
+        taskId,
+        stepN: step.n,
+        attempt,
+        reason: `worker killed: ${workerResult.killedBy}`,
+      });
+      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'failed' });
+      // markBlocked / skip onFailure → step ends 'blocked' so the task is
+      // marked needs-human downstream; halt → 'failed' so the plan halts.
+      stepOutcome =
+        intake.strategy.onFailure === 'halt' ? 'failed' : 'blocked';
+      break;
+    }
+
+    // ---- Pre-merge gate 1: tail-message ------------------------------------
+    // Tail-fail short-circuits BEFORE reviewer: if the worker didn't honor
+    // the protocol there's no point paying for an expensive reviewer call.
+    // Per design + Task 6.7 carry-forward, this is intentional.
+    const stdoutContent = await fs.readFile(stdoutPath, 'utf8');
+    const tailGate = verifyGates.verifyTail(stdoutContent);
+    if (!tailGate.ok) {
+      await events.emit({
+        kind: 'step.verify.tail.fail',
+        taskId,
+        stepN: step.n,
+        attempt,
+        reason: tailGate.reason,
+      });
+      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'failed' });
+      stepOutcome = intake.strategy.onFailure === 'halt' ? 'failed' : 'blocked';
+      break;
+    }
+    await events.emit({ kind: 'step.verify.tail.ok', taskId, stepN: step.n, attempt });
+
+    // ---- Pre-merge gate 2: commit-since-step-start -------------------------
+    const commitGate = await verifyGates.verifyCommit(worktreeInfo.absRoot, stepStartSha);
+    if (!commitGate.ok) {
+      await events.emit({
+        kind: 'step.verify.commit.fail',
+        taskId,
+        stepN: step.n,
+        attempt,
+        reason: commitGate.reason,
+      });
+      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'failed' });
+      stepOutcome = intake.strategy.onFailure === 'halt' ? 'failed' : 'blocked';
+      break;
+    }
+    await events.emit({ kind: 'step.verify.commit.ok', taskId, stepN: step.n, attempt });
+
+    // ---- Pre-merge gate 3: user verify command -----------------------------
+    const verifyCmdString = step.verify ?? intake.verify.command;
+    const cmdGate = await verifyGates.verifyCmd(worktreeInfo.absRoot, verifyCmdString);
+    if (!cmdGate.ok) {
+      const detail = cmdGate.detail as { exitCode?: number | null } | undefined;
+      await events.emit({
+        kind: 'step.verify.cmd.fail',
+        taskId,
+        stepN: step.n,
+        attempt,
+        exitCode: typeof detail?.exitCode === 'number' ? detail.exitCode : -1,
+      });
+      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'failed' });
+      stepOutcome = intake.strategy.onFailure === 'halt' ? 'failed' : 'blocked';
+      break;
+    }
+    await events.emit({ kind: 'step.verify.cmd.ok', taskId, stepN: step.n, attempt });
+
+    // ---- Pre-merge gate 4: reviewer ----------------------------------------
+    const g = simpleGit(worktreeInfo.absRoot);
+    const stepDiff = await g.raw(['diff', `${stepStartSha}..HEAD`]);
+
+    const reviewResult = await review.runReviewer({
+      adapter: reviewerAdapter,
+      model: intake.reviewer.model,
+      extraArgs: intake.reviewer.extraArgs,
+      promptPath: reviewerPromptPath,
+      stepDiff,
+      blockOn,
+      cwd: worktreeInfo.absRoot,
+      timeoutSec: intake.strategy.stepTimeoutSec,
+      stdoutCapBytes: intake.strategy.stepStdoutCapBytes,
+      stdoutPath: reviewerStdoutPath,
+      stderrPath: reviewerStderrPath,
+      signal: stepAc.signal,
+    });
+    lastReviewIssues = reviewResult.issues;
+
+    if (reviewResult.ok) {
+      await events.emit({ kind: 'step.verify.review.ok', taskId, stepN: step.n, attempt });
+      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'done' });
+      // Append a finding from the parsed oa-status block (summary). The tail
+      // gate already validated structurally; reparse to extract `summary`.
+      const status = parseTail(stdoutContent, 'oa-status');
+      if (status.ok) await findings.append(taskFolder, status.value.summary);
+      stepOutcome = 'done';
+      break;
+    }
+
+    // Reviewer flagged something. Two sub-cases:
+    //   (a) blocking issues + attempts remaining → synthesize fix context,
+    //       loop back for another attempt.
+    //   (b) blocking issues + last attempt exhausted → block the step.
+    // Reviewer non-blocking issues never appear here (review.runReviewer
+    // returns ok:true in that case).
+    await events.emit({
+      kind: 'step.verify.review.fail',
+      taskId,
+      stepN: step.n,
+      attempt,
+      blocking: reviewResult.blocking as unknown[],
+    });
+
+    if (attempt < maxLoops) {
+      const fixCtx = synthesizeFixContext(reviewResult.blocking);
+      prevIssues = fixCtx.openReviewIssues;
+      await events.emit({ kind: 'step.fix.synthesized', taskId, stepN: step.n, attempt });
+      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'failed' });
+      // Loop continues.
+    } else {
+      // Final attempt exhausted with blocking issues remaining.
+      await events.emit({ kind: 'step.fix.synthesized', taskId, stepN: step.n, attempt });
+      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'blocked' });
+      stepOutcome = 'blocked';
+      break;
+    }
+  }
+
+  // Mark the step's terminal status in PROGRESS.
+  const stepStatusForProgress: StepStatusT =
+    stepOutcome === 'done' ? 'done' : stepOutcome === 'failed' ? 'failed' : 'blocked';
+  await progress.mark(taskFolder, step.n, stepStatusForProgress);
+  await events.emit({ kind: 'step.end', taskId, stepN: step.n, status: stepStatusForProgress });
+
+  return {
+    outcome: stepOutcome,
+    attemptsRun: attempt,
+    finalReviewIssues: lastReviewIssues,
+  };
+}
+
+export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
+  const startedAt = Date.now();
+
+  // (1) Load + validate the plan. Reject if absent or in a status that means
+  //     it shouldn't be re-run via this path. 'sealed' is the canonical
+  //     "ready to run" state; 'running' is permitted so a future resume can
+  //     re-enter without forcing a status flip.
+  const sealed = await plan.get(opts.planId);
+  if (sealed === null) throw new Error(`plan not found: ${opts.planId}`);
+  if (sealed.status !== 'sealed' && sealed.status !== 'running') {
+    throw new Error(`plan ${opts.planId} is not runnable (status=${sealed.status})`);
+  }
+
+  // (2) Flip plan to 'running'.
+  await plan.setStatus(opts.planId, 'running');
+
+  // (3) Ensure runDir exists.
+  const runDirAbs = runDir(opts.planId);
+  await fs.mkdir(runDirAbs, { recursive: true });
+
+  // (4) Open the events writer. validate:false keeps the hot path lean; the
+  //     EventSchema test suite covers shape drift in CI.
+  const eventsPath = opts.eventsPath ?? path.resolve(runDirAbs, 'events.jsonl');
+  const events = await openEventWriter({ absPath: eventsPath, validate: false });
+
+  // (5) Emit run.start.
+  await events.emit({
+    kind: 'run.start',
+    planId: opts.planId,
+    hostInfo: {
+      pid: process.pid,
+      platform: process.platform,
+      arch: process.arch,
+      nodeVersion: process.version,
+    },
+  });
+
+  // (6) Wall-clock budget. v0 reads `overrides.planBudgetSec` (set by the
+  //     plan author at seal time) or falls back to 8h (the DEFAULT_CONFIG
+  //     value). Config-from-disk wiring lands in Task 7.7; injecting via
+  //     overrides keeps tests simple here.
+  const planBudgetSec =
+    typeof sealed.overrides.planBudgetSec === 'number' ? sealed.overrides.planBudgetSec : 28800;
+  const budgetDeadline = startedAt + planBudgetSec * 1000;
+  const isBudgetExhausted = (): boolean => Date.now() >= budgetDeadline;
+
+  // (7) Per-task outer loop.
+  const taskOutcomes: RunPlanResult['taskOutcomes'] = [];
+  let halted = false;
+  let abortedReason: 'user' | 'budget' | 'completed' = 'completed';
+
+  for (const taskId of sealed.taskListIds) {
+    // Budget check first: if exhausted, mark THIS and remaining tasks as
+    // budget-exhausted (no events emitted for them — the plan-level run.stop
+    // 'budget' reason carries the signal).
+    if (isBudgetExhausted()) {
+      taskOutcomes.push({ taskId, outcome: 'budget-exhausted', stepsRun: 0 });
+      await inbox.setStatus(taskId, 'budget-exhausted').catch(() => undefined);
+      abortedReason = 'budget';
+      halted = true;
+      continue;
+    }
+
+    // Signal-abort check: stop cleanly. Tasks not yet started leave their
+    // inbox status untouched (still 'queued') — the operator can resume.
+    if (opts.signal.aborted) {
+      abortedReason = 'user';
+      halted = true;
+      break;
+    }
+
+    const taskFolder = taskDir(taskId);
+    const intake = await loadIntake(taskFolder);
+    const stepsDoc = await loadSteps(taskFolder);
+
+    await inbox.setStatus(taskId, 'running');
+    await events.emit({ kind: 'task.start', taskId });
+
+    // Worktree.
+    const wt = await worktree.create({
+      taskId,
+      repoDir: intake.project.dir,
+      baseBranch: intake.project.baseBranch,
+      taskTitle: intake.title,
+    });
+
+    // Bootstrap. v0 onFailure semantics: bootstrap-failed = task fails. If
+    // intake.strategy.onFailure === 'halt', the plan halts after this task;
+    // any other policy continues to the next task.
+    if (intake.bootstrap.script.trim() !== '') {
+      const bs = await runBootstrap({
+        absWorktree: wt.absRoot,
+        script: intake.bootstrap.script,
+        timeoutSec: intake.bootstrap.timeoutSec,
+        eventWriter: events,
+        taskId,
+      });
+      if (!bs.ok) {
+        await inbox.setStatus(taskId, 'bootstrap-failed');
+        await events.emit({ kind: 'task.end', taskId, status: 'bootstrap-failed' });
+        taskOutcomes.push({ taskId, outcome: 'bootstrap-failed', stepsRun: 0 });
+        if (intake.strategy.onFailure === 'halt') {
+          halted = true;
+          break;
+        }
+        continue;
+      }
+    }
+
+    // Resolve adapters via the injected factories. Production wiring (Task
+    // 7.7) will route through `getAdapter(intake.executor.agent)`; the
+    // factory-injection seam keeps tests free of registry plumbing.
+    const workerAdapter = opts.workerAdapterFactory(intake.executor.agent);
+    const reviewerAdapter = opts.reviewerAdapterFactory(intake.reviewer.agent);
+
+    // Reviewer prompt path: intake.reviewer.promptPath or a default. The
+    // default is materialized as a tmp file so review.runReviewer can read
+    // it via fs.readFile (the contract requires an absolute path).
+    let reviewerPromptPath = intake.reviewer.promptPath;
+    let cleanupReviewerPrompt: (() => Promise<void>) | null = null;
+    if (reviewerPromptPath === null) {
+      const tmp = path.resolve(runDirAbs, 'reviewer-default-prompt.md');
+      await writeFileAtomic(
+        tmp,
+        'You are the reviewer. Examine the diff and emit findings as P0/P1/P2.\n',
+      );
+      reviewerPromptPath = tmp;
+      cleanupReviewerPrompt = async (): Promise<void> => {
+        await fs.unlink(tmp).catch(() => undefined);
+      };
+    }
+
+    // Per-step inner loop.
+    let stepsRun = 0;
+    const stepResults: StepRunResult[] = [];
+    let taskHaltedByStep = false;
+    for (const step of stepsDoc.steps) {
+      if (opts.signal.aborted) {
+        abortedReason = 'user';
+        halted = true;
+        break;
+      }
+      if (isBudgetExhausted()) {
+        abortedReason = 'budget';
+        halted = true;
+        break;
+      }
+      const stepResult = await runStep(
+        taskId,
+        step,
+        intake,
+        workerAdapter,
+        reviewerAdapter,
+        wt,
+        reviewerPromptPath,
+        runDirAbs,
+        taskFolder,
+        events,
+        opts.signal,
+      );
+      stepsRun += 1;
+      stepResults.push(stepResult);
+      if (stepResult.outcome === 'failed' && intake.strategy.onFailure === 'halt') {
+        taskHaltedByStep = true;
+        halted = true;
+        break;
+      }
+    }
+
+    if (cleanupReviewerPrompt !== null) await cleanupReviewerPrompt();
+
+    // Aggregate task outcome from step outcomes:
+    //   any step 'failed' (with halt policy) → task 'failed', plan halts
+    //   any step 'blocked'                   → task 'blocked-needs-human'
+    //   any step 'failed' (non-halt policy)  → task 'blocked-needs-human'
+    //   all 'done'                           → task 'done'
+    let taskOutcome: TaskOutcome;
+    if (stepResults.some((r) => r.outcome === 'failed') && intake.strategy.onFailure === 'halt') {
+      taskOutcome = 'failed';
+    } else if (
+      stepResults.some((r) => r.outcome === 'blocked' || r.outcome === 'failed')
+    ) {
+      taskOutcome = 'blocked-needs-human';
+    } else {
+      taskOutcome = 'done';
+    }
+    const taskStatus: TaskStatusT =
+      taskOutcome === 'done'
+        ? 'done'
+        : taskOutcome === 'failed'
+          ? 'failed'
+          : 'blocked-needs-human';
+
+    await events.emit({ kind: 'task.end', taskId, status: taskStatus });
+    await inbox.setStatus(taskId, taskStatus);
+    taskOutcomes.push({ taskId, outcome: taskOutcome, stepsRun });
+
+    if (taskHaltedByStep) break;
+    if (halted) break;
+  }
+
+  // (8) run.stop. Reason precedence: budget > user > completed.
+  await events.emit({ kind: 'run.stop', reason: abortedReason });
+
+  // (9) Plan terminal status.
+  let planOutcome: PlanOutcome;
+  if (abortedReason === 'budget') planOutcome = 'budget-exhausted';
+  else if (abortedReason === 'user') planOutcome = 'stopped';
+  else if (taskOutcomes.every((t) => t.outcome === 'done')) planOutcome = 'done';
+  else planOutcome = 'partial';
+
+  const planStatusForStore =
+    planOutcome === 'done'
+      ? 'done'
+      : planOutcome === 'stopped'
+        ? 'stopped'
+        : 'partial'; // 'partial' covers both partial AND budget-exhausted in the store
+  await plan.setStatus(opts.planId, planStatusForStore);
+
+  // (10) Close events writer.
+  await events.close();
+
+  // (11) Return.
+  return {
+    planId: opts.planId,
+    outcome: planOutcome,
+    taskOutcomes,
+    durationMs: Date.now() - startedAt,
+  };
+}

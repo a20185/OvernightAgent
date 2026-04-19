@@ -174,3 +174,16 @@ export type { EventWriter, EventWriterOpts } from './events/writer.js';
 // contract notes.
 export { runBootstrap } from './supervisor/bootstrap.js';
 export type { RunBootstrapOpts, RunBootstrapResult } from './supervisor/bootstrap.js';
+// Supervisor outer loop (Task 7.3). The Phase 7 production glue: given a sealed
+// planId, runs every task's bootstrap + steps in order, applies the per-step
+// inner loop (assemblePrompt → adapter.run → verify gates → reviewer → maybe
+// fix-loop), and surfaces per-task outcomes back to the caller. Aborts cleanly
+// on `signal` and budget exhaustion. v0 takes worker/reviewer adapters by
+// injection; Task 7.7 will route via the registry.
+export { runPlan } from './supervisor/runPlan.js';
+export type {
+  RunPlanOpts,
+  RunPlanResult,
+  PlanOutcome,
+  TaskOutcome,
+} from './supervisor/runPlan.js';
