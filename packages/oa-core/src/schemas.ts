@@ -543,6 +543,28 @@ export const OaStatusSchema = z
   })
   .strict();
 
+// -----------------------------------------------------------------------------
+// Task 6.5 — `_progress.json` shape. Source of truth backing the human-readable
+// PROGRESS.md table. Each step has at most one entry (keyed by `n`); the
+// supervisor upserts via `state/progress.ts::mark`. `attempt` and `detail` are
+// optional — the supervisor populates them for running/failed states but not
+// every status carries them. `updatedAt` is required and ISO-8601-with-offset
+// (matching every other timestamp in the codebase).
+// -----------------------------------------------------------------------------
+
+export const StepProgressSchema = z.object({
+  n: z.number().int().positive(),
+  status: StepStatus,
+  attempt: z.number().int().positive().optional(),
+  detail: z.string().optional(),
+  updatedAt: z.iso.datetime({ offset: true }),
+});
+
+export const ProgressDocSchema = z.object({
+  schemaVersion: z.literal(1),
+  steps: z.array(StepProgressSchema),
+});
+
 export const OaReviewIssueSchema = z
   .object({
     priority: ReviewPriority,
@@ -580,3 +602,5 @@ export type StepStatusT = z.infer<typeof StepStatus>;
 export type OaStatus = z.infer<typeof OaStatusSchema>;
 export type OaReview = z.infer<typeof OaReviewSchema>;
 export type OaReviewIssue = z.infer<typeof OaReviewIssueSchema>;
+export type StepProgress = z.infer<typeof StepProgressSchema>;
+export type ProgressDoc = z.infer<typeof ProgressDocSchema>;

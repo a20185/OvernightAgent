@@ -26,7 +26,7 @@
 
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { writeJsonAtomic } from '../atomicJson.js';
+import { writeFileAtomic, writeJsonAtomic } from '../atomicJson.js';
 import { newTaskId } from '../ids.js';
 import { taskDir } from '../paths.js';
 import {
@@ -62,28 +62,6 @@ export interface IntakeSubmitInput {
 export interface IntakeSubmitResult {
   taskId: string;
   taskFolder: string;
-}
-
-/**
- * Atomic-rename string writer. Mirrors `writeJsonAtomic`'s temp+rename pattern
- * so source-plan.md / HANDOFF.md / PROGRESS.md / FINDINGS.md get the same
- * crash-safety guarantee as the JSON files. A partial write that crashes
- * midway leaves the target either absent or fully written — never half-baked.
- *
- * The temp filename embeds pid + random bytes so concurrent writers in the
- * same dir don't collide. `fs.rename` is atomic within a single filesystem.
- */
-async function writeFileAtomic(absPath: string, content: string): Promise<void> {
-  const dir = path.dirname(absPath);
-  await fs.mkdir(dir, { recursive: true });
-  // Inline the random suffix to keep this module self-contained; mirrors the
-  // pattern in atomicJson.ts (4 random bytes + pid).
-  const { randomBytes } = await import('node:crypto');
-  const suffix = randomBytes(4).toString('hex');
-  const tmpName = `${path.basename(absPath)}.tmp.${process.pid}.${suffix}`;
-  const tmpPath = path.resolve(dir, tmpName);
-  await fs.writeFile(tmpPath, content, 'utf8');
-  await fs.rename(tmpPath, absPath);
 }
 
 export async function intakeSubmit(input: IntakeSubmitInput): Promise<IntakeSubmitResult> {

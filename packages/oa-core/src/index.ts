@@ -10,7 +10,7 @@ export {
 export { assertId, newTaskId, newPlanId } from './ids.js';
 export type { IdGeneratorDeps } from './ids.js';
 export { slug, DEFAULT_MAX_LENGTH } from './slug.js';
-export { readJson, writeJsonAtomic } from './atomicJson.js';
+export { readJson, writeFileAtomic, writeJsonAtomic } from './atomicJson.js';
 export { ensureHomeLayout, DEFAULT_CONFIG } from './home.js';
 export { withInboxLock } from './locks.js';
 // Namespaced re-export so `create` doesn't collide with future top-level
@@ -72,6 +72,10 @@ export {
   OaStatusSchema,
   OaReviewSchema,
   OaReviewIssueSchema,
+  // Task 6.5 — `_progress.json` shape. The `state/progress.ts` module re-
+  // exports the inferred TS types for ergonomics; the schemas live here.
+  StepProgressSchema,
+  ProgressDocSchema,
 } from './schemas.js';
 export type {
   Config,
@@ -90,6 +94,8 @@ export type {
   OaStatus,
   OaReview,
   OaReviewIssue,
+  StepProgress,
+  ProgressDoc,
 } from './schemas.js';
 // Tail-message parser (ADR-0008, Task 6.1). Pure function: extract the LAST
 // fenced ```oa-status / ```oa-review block, JSON-parse, validate. Consumed by
@@ -120,6 +126,13 @@ export type { RunReviewerOpts, RunReviewerResult } from './verify/review.js';
 // injector helpers added in 6.5/6.6.
 export * as context from './verify/context.js';
 export type { AssemblePromptInput } from './verify/context.js';
+// Per-task PROGRESS / FINDINGS mutators (Task 6.5). Phase 7's supervisor calls
+// `progress.mark(taskFolder, n, status)` at every step boundary and
+// `findings.append(taskFolder, summary)` after every successful step. Both are
+// namespaced (`progress.mark`, `findings.append`) so the bare verbs stay free
+// for adjacent state helpers added later.
+export * as progress from './state/progress.js';
+export * as findings from './state/findings.js';
 // AgentAdapter contract (ADR-0009). Types-only — adapter packages depend on
 // `oa-core`'s public surface and consume these without importing any runtime.
 export type { AgentAdapter, AgentId, AgentRunOpts, AgentRunResult } from './adapter/types.js';
