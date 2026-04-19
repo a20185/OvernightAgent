@@ -13,6 +13,7 @@
     "typecheck": "tsc -p . --noEmit"
   },
   "dependencies": {
+    "execa": "~9.6.1",
     "proper-lockfile": "~4.1.2",
     "simple-git": "~3.27.0",
     "zod": "~4.3.6"
