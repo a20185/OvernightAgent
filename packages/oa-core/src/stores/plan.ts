@@ -145,6 +145,10 @@ export async function create(opts: CreatePlanOpts): Promise<Plan> {
   if (opts.taskListIds.length === 0) {
     throw new Error('taskListIds cannot be empty');
   }
+  const dedup = new Set(opts.taskListIds);
+  if (dedup.size !== opts.taskListIds.length) {
+    throw new Error('taskListIds contains duplicates');
+  }
 
   const planId = newPlanId();
   const plan: Plan = {
@@ -182,6 +186,11 @@ export async function create(opts: CreatePlanOpts): Promise<Plan> {
     // two writes leaves the inbox describing tasks that have no plan
     // (recoverable) rather than a plan referencing tasks the inbox still
     // calls 'pending' (confusing).
+    //
+    // NOTE: this flips from any source status → 'queued', not strictly pending →
+    // queued. Re-sealing a done/failed task is permitted and silently downgrades
+    // it to queued. The store accepts any source status; the supervisor (Phase 7)
+    // owns lifecycle correctness — same precedent as inbox.setStatus.
     const idsToFlip = new Set(opts.taskListIds);
     for (const task of inbox.tasks) {
       if (idsToFlip.has(task.id)) task.status = 'queued';
@@ -247,6 +256,9 @@ export async function list(): Promise<Plan[]> {
  * files and `writeJsonAtomic` provides per-file atomicity. Concurrent
  * setStatus on the SAME planId follow last-writer-wins, which matches
  * inbox.setStatus's contract.
+ *
+ * No transition validation — caller (supervisor or CLI) owns lifecycle
+ * correctness. Same contract as inbox.setStatus.
  */
 export async function setStatus(planId: string, status: PlanStatusT): Promise<void> {
   const p = planPath(planId);

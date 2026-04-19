@@ -75,6 +75,15 @@ describe('PlanStore', () => {
     await expect(plan.create({ taskListIds: [] })).rejects.toThrow(/empty/);
   });
 
+  it('create() rejects duplicate taskListIds', async () => {
+    const a = makeEntry();
+    await inbox.add(a);
+    await expect(plan.create({ taskListIds: [a.id, a.id] }))
+      .rejects.toThrow(/duplicates/);
+    // Atomic-on-failure: inbox unchanged
+    expect((await inbox.get(a.id))?.status).toBe('pending');
+  });
+
   it('create() rejects when any taskListId is missing from the inbox', async () => {
     const a = makeEntry();
     await inbox.add(a);
