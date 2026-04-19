@@ -157,3 +157,11 @@ export type { SpawnOpts } from './adapter/spawn.js';
 // alongside but is, as the name says, test-only — production callers should
 // never need it. Phase 7's supervisor consumes `getAdapter` exclusively.
 export { getAdapter, __resetAdapterCacheForTest } from './adapter/registry.js';
+// Events JSONL writer (Task 7.1). The Phase 7 supervisor opens one writer per
+// run (`<runDir>/events.jsonl`) and emits a structured event for every state
+// transition (run.start, task.start, step.attempt.start, step.verify.*, …).
+// Append-only, line-atomic via POSIX O_APPEND, auto-stamped `ts`. Validation
+// is opt-in (dev/test pay zod cost; prod skips for the hot path). See
+// writer.ts for the full contract notes.
+export { openEventWriter } from './events/writer.js';
+export type { EventWriter, EventWriterOpts } from './events/writer.js';
