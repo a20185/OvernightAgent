@@ -371,6 +371,14 @@ const TaskBootstrapEnd = EventBase.extend({
   kind: z.literal('task.bootstrap.end'),
   ...taskRef,
   ok: z.boolean(),
+  // Pinned by Task 7.2's bootstrap runner. `exitCode` is null when the script
+  // was killed by signal (including the wall-clock timeout); `timedOut` is the
+  // authoritative "killed by our timeout" signal alongside it. `durationMs`
+  // measures the spawn span only (excludes assert / tmp-file overhead) so the
+  // post-mortem can attribute time correctly without re-deriving from ts deltas.
+  exitCode: z.number().int().nullable(),
+  durationMs: z.number().int().nonnegative(),
+  timedOut: z.boolean(),
 }).passthrough();
 
 const TaskEnd = EventBase.extend({

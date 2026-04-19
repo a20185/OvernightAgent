@@ -165,3 +165,12 @@ export { getAdapter, __resetAdapterCacheForTest } from './adapter/registry.js';
 // writer.ts for the full contract notes.
 export { openEventWriter } from './events/writer.js';
 export type { EventWriter, EventWriterOpts } from './events/writer.js';
+// Bootstrap runner (Task 7.2). Phase 7's supervisor calls this once per task,
+// before the first step, to run the per-task setup script (`pnpm install`,
+// `cargo fetch`, etc) verbatim from `intake.bootstrap.script`. Empty scripts
+// are a no-op (no events emitted); non-empty scripts are bracketed by
+// `task.bootstrap.{start,end}` events with truncated stdout/stderr captured
+// in the result for post-mortem inspection. See bootstrap.ts for the full
+// contract notes.
+export { runBootstrap } from './supervisor/bootstrap.js';
+export type { RunBootstrapOpts, RunBootstrapResult } from './supervisor/bootstrap.js';
