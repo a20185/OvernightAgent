@@ -1,6 +1,6 @@
 # OvernightAgent — Implementation Findings
 
-Lessons, gotchas, and design refinements discovered during the 33 tasks completed so far. Useful when resuming or making analogous decisions in remaining tasks.
+Lessons, gotchas, and design refinements discovered during the 34 tasks completed so far. Useful when resuming or making analogous decisions in remaining tasks.
 
 ---
 
@@ -68,6 +68,7 @@ The two-stage review (spec compliance → code quality) found bugs the implement
 
 - **Task 7.3** (supervisor): emitted `step.verify.tail.fail` for ALL killed-worker cases, even though EventSchema had dedicated `step.timeout` and `step.stdoutCapHit` variants. Schema-implementation drift; reviewer asked: emit both or delete the unused variants. Fix: emit dedicated event AS WELL AS the unified tail.fail.
 - **Task 6.5** (progress): added `StepProgressSchema` and `ProgressDocSchema` as plain `z.object(...)` instead of `.strict()`. Other schemas in the same file used `.strict()`. Fix: align with convention.
+- **Task 7.4** (daemonization): three separate review loops caught launch-contract drift the happy-path test missed: first, the launcher reused one fd for both stdout/stderr even though the spec pinned two separate `fs.openSync(..., 'a')` calls; then the child entry wrote plain-text `console.error` into `events.jsonl`; finally the detached launcher could exit `0` even when the child entry path was missing, letting Node dump a raw `MODULE_NOT_FOUND` stack into the log. Fix: exact stdio shape, JSONL-safe `run.error`/`daemon.signal` output, and preflight `fs.accessSync` on the entry path before detaching.
 
 ---
 
@@ -93,6 +94,7 @@ Discovered in Task 3.1 review. `withInboxLock(async () => { await inbox.setStatu
 - For multi-word verify commands like `pnpm test && pnpm lint`, `shell: true` is necessary — without it `&&` and pipes are treated as literal arguments. Task 6.2.
 - `reject: false` on execa keeps await-resolution linear instead of throw-on-non-zero-exit. Established convention since Task 5.2.
 - Manual SIGKILL grace period (`setTimeout(SIGKILL, 500)`) belt-and-suspenders alongside execa's `forceKillAfterDelay: 500`. Observed in Task 5.2 spawn helper.
+- If a detached child writes to a structured JSONL log, every stderr/stdout failure path must also be structured JSON. Otherwise a single startup error corrupts the whole event stream. Task 7.4 hardened this by emitting `run.error` / `daemon.signal` JSON lines from the child entry and by preflighting the entry path before spawn so Node never gets the chance to print a raw `MODULE_NOT_FOUND` stack into `events.jsonl`.
 
 ### Workspace cycle in the adapter registry
 
@@ -159,6 +161,10 @@ The markdown is regenerated from the JSON on every mutation; never the other way
 ### Single-writer convention for per-task state
 
 `PROGRESS.md`, `FINDINGS.md`, and the per-task folder generally have a single writer (the supervisor). No locking needed — the convention is enforced by the daemon-per-plan + sequential-task-execution model. If parallel-task mode lands later (Phase 8+), this needs revisiting.
+
+### Detached-process tests need cleanup hooks
+
+Task 7.4's daemon integration test initially passed green but could leak detached background processes on a red run. The final harness tracks launched planIds and best-effort SIGTERMs/SIGKILLs them in `afterEach`. Any future detached-process or socket-server test should do the same, or CI/dev machines will accumulate orphans when assertions fail mid-test.
 
 ### Stub event writer pattern for tests
 

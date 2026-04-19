@@ -1,8 +1,8 @@
 # OvernightAgent — Implementation Progress
 
-**Snapshot at:** Task 7.3 fix-up commit `200829b` on `dev`
-**Total commits on dev:** 56 (2 design + 54 implementation)
-**Workspace tests:** 372 passing (oa-core 361, oa-adapter-claude 6, oa-cli 3, 2 adapter smoke)
+**Snapshot at:** working tree atop `680669e` with Task 7.4 complete and verified
+**Total commits on dev:** 57 committed (2 design + 55 implementation/checkpoint) + current uncommitted Task 7.4 worktree
+**Workspace tests:** 375 passing (oa-core 364, oa-adapter-claude 6, oa-cli 3, 2 adapter smoke)
 
 ---
 
@@ -17,7 +17,7 @@
 | 4 | Intake pipeline | ✅ done | 4 sub-tasks (with fix-loop on 4.3) | parseSteps/references/handoff/submit |
 | 5 | AgentAdapter + claude | ✅ done | 4 sub-tasks (clean) | types/spawnHeadless/claude/registry |
 | 6 | Verify pipeline + fix loop | ✅ done | 7 sub-tasks (with small fix-up on 6.5 schemas) | tail/gates/reviewer/context/state/fixLoop + integration test |
-| **7** | **Supervisor / daemon / socket / resume** | **3/8** | runPlan landed with hardening fix-up | Daemon, pidfile, socket, resume still pending |
+| **7** | **Supervisor / daemon / socket / resume** | **4/8** | runPlan landed with hardening fix-up; daemonization complete in working tree | Pidfile lifecycle, socket, and resume still pending |
 | 8 | oa-cli surface | ⬜ pending | 10 sub-tasks queued | Each command wraps oa-core APIs |
 | 9 | SUMMARY.md renderer | ⬜ pending | 3 sub-tasks queued | events reader + renderer + auto-render hook |
 | 10 | codex + opencode adapters | ⬜ pending | 3 sub-tasks queued | Mirror oa-adapter-claude shape |
@@ -33,7 +33,7 @@
 | 7.1 | events.jsonl writer | ✅ | `846e644` | Notable: caught real concurrency bug — Node's `FileHandle.appendFile` is NOT internally serialized despite POSIX O_APPEND; chained-promise FIFO fix |
 | 7.2 | Bootstrap runner | ✅ | `41d615b` | Empty script no-ops; tmp script chmod 755 + cleanup in finally; widened TaskBootstrapEnd schema variant |
 | 7.3 | Supervisor outer loop | ✅ | `0ea961e` + fix-up `200829b` | 668 LOC source + 550 LOC tests + 6 integration scenarios. Fix-up addressed 8 Important review items (try/finally, abort checks, blocked-step exit, run.error emission, dedicated step.timeout/stdoutCapHit events, etc.) |
-| 7.4 | Daemonization | ⬜ next | — | `child_process.spawn` with `detached:true`, pidfile on startup, signal handlers |
+| 7.4 | Daemonization | ✅ working tree | uncommitted atop `680669e` | `detachAndRun` + child entry scaffold + integration coverage; review fix-ups caught fd-shape drift, JSONL corruption risk, startup signal race, false-success missing-entry path, and launcher-exit test gap |
 | 7.5 | Pidfile lifecycle | ⬜ | — | `acquire/release/isStale` with `process.kill(pid, 0)` liveness check |
 | 7.6 | Control socket | ⬜ | — | Unix domain socket per ADR-0012 (supersedes SIGUSR1 from ADR-0010); JSON request/reply; cleans stale sock file |
 | 7.7 | Wire socket into supervisor | ⬜ | — | `stop {now:false}` → graceful abort; `stop {now:true}` → SIGTERM agent; `status` → live state |
@@ -41,7 +41,7 @@
 
 ---
 
-## Carry-forwards into Phase 7.4-7.8
+## Carry-forwards into Phase 7.5-7.8
 
 Captured on Task #15 (Phase 7) description in the tracker. Pasted here for reference:
 
@@ -115,12 +115,12 @@ Suggestions level (from the Task 7.3 code-quality review):
 
 | Package | Files | Tests |
 |---|---|---|
-| oa-core | 30 | 361 |
+| oa-core | 31 | 364 |
 | oa-adapter-claude | 2 | 6 |
 | oa-adapter-codex | 1 | 1 (smoke) |
 | oa-adapter-opencode | 1 | 1 (smoke) |
 | oa-cli | 2 | 3 |
-| **Total** | **36** | **372** |
+| **Total** | **37** | **375** |
 
 ---
 

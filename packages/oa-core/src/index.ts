@@ -174,6 +174,12 @@ export type { EventWriter, EventWriterOpts } from './events/writer.js';
 // contract notes.
 export { runBootstrap } from './supervisor/bootstrap.js';
 export type { RunBootstrapOpts, RunBootstrapResult } from './supervisor/bootstrap.js';
+// Detached daemon launcher (Task 7.4). Spawns the supervisor entry in a
+// detached Node child, wires stdout/stderr to the run's events log, then
+// unrefs the child and exits the launcher. The entrypoint itself owns pidfile
+// creation and signal traps.
+export { detachAndRun } from './supervisor/daemon.js';
+export type { DetachAndRunOpts } from './supervisor/daemon.js';
 // Supervisor outer loop (Task 7.3). The Phase 7 production glue: given a sealed
 // planId, runs every task's bootstrap + steps in order, applies the per-step
 // inner loop (assemblePrompt → adapter.run → verify gates → reviewer → maybe
