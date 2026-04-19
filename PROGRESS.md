@@ -1,7 +1,7 @@
 # OvernightAgent — Implementation Progress
 
-**Snapshot at:** Task 7.7 fix-up workspace on `dev`
-**Total commits on dev:** 63 after the Task 7.7 fix-up (2 design + 61 implementation/checkpoint)
+**Snapshot at:** Post-7.7 handoff refresh on `dev`
+**Total commits on dev:** 64 at this checkpoint (2 design + 61 implementation/checkpoint + 1 handoff refresh)
 **Workspace tests:** 396 passing (oa-core 385, oa-adapter-claude 6, oa-cli 3, 2 adapter smoke)
 
 ---
@@ -36,7 +36,7 @@
 | 7.4 | Daemonization | ✅ | `4be272f` | `detachAndRun` + child entry scaffold + integration coverage; review fix-ups caught fd-shape drift, JSONL corruption risk, startup signal race, false-success missing-entry path, and launcher-exit test gap |
 | 7.5 | Pidfile lifecycle | ✅ | `18cec8b` | `proper-lockfile`-guarded `acquire/release/isStale`, entry wired through helper, startup-ownership regression test, and true cross-process contention coverage |
 | 7.6 | Control socket | ✅ | `2b8d50d` + `fix(core): preserve live control socket` | Standalone AF_UNIX request/reply helper with `schemaVersion: 1`, stale-socket cleanup, server-close unlink, and regression coverage that a second `serve()` cannot steal a live socket path |
-| 7.7 | Wire socket into supervisor | ✅ | `4160ee8` + `fix(core): clean up supervisor entry signal handlers` | `runPlan` owns the control socket, `status` reports live state, graceful/force stop map to resumable `pending`, registry fallback is active, and the entry path now cleans up injected signal handlers |
+| 7.7 | Wire socket into supervisor | ✅ | `4160ee8` + `1b5c03b` | `runPlan` owns the control socket, `status` reports live state, graceful/force stop map to resumable `pending`, `spawnHeadless` closes the abort/onSpawned races, registry fallback is active, and the entry path now cleans up injected signal handlers |
 | 7.8 | Resume protocol | ⬜ | — | Detect stale pidfile, rewindToHead in-flight worktrees, mark steps pending, re-enter outer loop |
 
 ---
@@ -97,7 +97,7 @@ Captured on Task #20:
 
 ---
 
-## Carry-forwards from Task 7.3 review (NOT yet applied; should be when Tasks 7.6-7.8 wire the daemon)
+## Carry-forwards from Task 7.3 review (remaining after 7.7; fold into 7.8+)
 
 Suggestions level (from the Task 7.3 code-quality review):
 
@@ -115,12 +115,12 @@ Suggestions level (from the Task 7.3 code-quality review):
 
 | Package | Files | Tests |
 |---|---|---|
-| oa-core | 36 | 385 |
-| oa-adapter-claude | 2 | 6 |
+| oa-core | 38 | 385 |
+| oa-adapter-claude | 3 | 6 |
 | oa-adapter-codex | 1 | 1 (smoke) |
 | oa-adapter-opencode | 1 | 1 (smoke) |
 | oa-cli | 2 | 3 |
-| **Total** | **42** | **396** |
+| **Total** | **45** | **396** |
 
 ---
 

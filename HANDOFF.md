@@ -1,8 +1,8 @@
 # OvernightAgent — Session Handoff
 
-**Prior checkpoint commit:** `4160ee8` (Task 7.7 — supervisor responds to control socket)
+**Prior implementation checkpoint commit:** `1b5c03b` (Task 7.7 fix-up — clean up supervisor entry signal handlers)
 **Branch:** `dev` (cut from `master`; design docs are on `master`)
-**Latest completed task:** 7.7 — wire control socket into supervisor
+**Latest completed task:** 7.7 — wire control socket into supervisor, plus stop-handoff hardening
 **Verification:** `pnpm -r build` + `pnpm -r test` green — 396 passing across 5 packages (oa-core 385 + oa-adapter-claude 6 + oa-cli 3 + 2 adapter smoke tests)
 
 ---
@@ -75,7 +75,7 @@ pnpm -r build && pnpm -r test        # all 5 packages, 396 tests, all green
 Then continue the workflow:
 1. Re-enter the `superpowers:subagent-driven-development` skill (or just dispatch implementer subagents directly with the per-task spec).
 2. Next task is **Task 7.8 (Resume protocol)**.
-3. The Phase 7 task description (in the task tracker) still carries 10 carry-forwards from prior reviews — re-read those before dispatching to keep the resume contract intact.
+3. The Phase 7 task description (in the task tracker) still carries 10 carry-forwards from prior reviews — re-read those before dispatching to keep the resume contract intact. The 7.7 fix-up closed the last known stop-race/listener-leak edges; the remaining work is resume behavior, not more socket wiring.
 
 ---
 
@@ -130,7 +130,7 @@ These are non-negotiable conventions established and re-verified through the Tas
 - `dev` is ahead of `master` by 61 commits once the Task 7.7 fix-up commit lands. `master` has 2 commits (the design + ADR docs).
 - No remote configured. All work is local.
 - Working tree should be clean after the Task 7.7 fix-up commit lands.
-- Latest checkpoint commit message:
+- Latest implementation checkpoint commit message:
 
 ```
 fix(core): clean up supervisor entry signal handlers

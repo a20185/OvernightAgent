@@ -1,6 +1,6 @@
 # OvernightAgent — Implementation Findings
 
-Lessons, gotchas, and design refinements discovered during the 36 tasks completed so far. Useful when resuming or making analogous decisions in remaining tasks.
+Lessons, gotchas, and design refinements discovered during the 37 tasks completed so far. Useful when resuming or making analogous decisions in remaining tasks.
 
 ---
 
@@ -16,6 +16,7 @@ Every task in this codebase had failing-test-then-passing-test evidence in the i
 - Task 7.3 (supervisor): drop a junk file between attempts inside the worker callback, probe for it on attempt 2 — proves the rewind happens via the production code path, not synthetic.
 - Task 7.5 (pidfile lifecycle): the initial in-process race test was too weak; replacing it with two real Node children importing the built `dist` helper exposed path-resolution mistakes in the harness and ultimately pinned the true single-winner guarantee.
 - Task 7.6 (control socket): the initial happy-path socket tests passed even though a second `serve()` could unlink a live socket path and silently steal future clients. A focused regression test that started two servers on the same path forced the implementation to distinguish stale leftovers from live listeners.
+- Task 7.7 (supervisor control wiring): the first green implementation still left a narrow abort-registration race and assumed a throwing `onSpawned` callback would be harmless. A focused hardening pass pinned both edges: install abort listeners before exposing live control, and kill/reap the child before rethrowing.
 
 ### File-path-wrapped errors
 
@@ -68,6 +69,7 @@ The two-stage review (spec compliance → code quality) found bugs the implement
 - **Task 7.5** (pidfile lifecycle): the first helper version used a check-then-overwrite write path, which let two contenders both “succeed” under contention. Review forced the live/stale check and rewrite into a single `proper-lockfile` critical section. A second review also caught the startup-signal bug where `runSupervisorEntry` could release another daemon's pidfile before ownership was established; fixed with an `ownsPidfile` gate plus a focused entry regression test.
 - **Task 7.6** (control socket): the first `serve()` implementation unlinked any pre-existing socket path before bind. That satisfied the stale-socket test but let a second live server steal the pathname from the first daemon, breaking future clients without ever surfacing `EADDRINUSE`. Fix: probe the existing socket path first, only unlink on connect-failure (`ECONNREFUSED` / `ENOTSOCK` / `ENOENT`), and pin the behavior with a live-socket regression test.
 - **Task 7.7** (supervisor entry wiring): `runSupervisorEntry()` installed `process.once('SIGTERM'/'SIGINT')` handlers but did not remove them on a normal return. Repeated in-process entry runs could leak one-shot signal handlers until some later unrelated signal fired, producing stray `daemon.signal` output and risking cross-test interference. Fix: retain handler refs, remove them in an outer `finally`, and pin listener-count restoration in `entry.integration.test.ts`.
+- **Task 7.7** (spawn handoff): the stop path originally called `onSpawned` before the abort listener was fully wired and did not reap the child if `onSpawned` itself threw. That left a tiny missed-abort window and an orphan-process edge during live-control setup. Fix: register abort first, then invoke `onSpawned`, and kill/reap before surfacing the callback error.
 
 ### Real schema/contract drift
 
@@ -101,6 +103,8 @@ Discovered in Task 3.1 review. `withInboxLock(async () => { await inbox.setStatu
 - `reject: false` on execa keeps await-resolution linear instead of throw-on-non-zero-exit. Established convention since Task 5.2.
 - Manual `SIGKILL` grace period (`setTimeout(SIGKILL, 500)`) belt-and-suspenders alongside execa's `forceKillAfterDelay: 500`. Observed in Task 5.2 spawn helper.
 - If a detached child writes to a structured JSONL log, every stderr/stdout failure path must also be structured JSON. Otherwise a single startup error corrupts the whole event stream. Task 7.4 hardened this by emitting `run.error` / `daemon.signal` JSON lines from the child entry and by preflighting the entry path before spawn so Node never gets the chance to print a raw `MODULE_NOT_FOUND` stack into `events.jsonl`.
+- For abort-driven child control, use add-then-check, not check-then-add. Task 7.7's hardening fix-up closed the race where a stop request could land between `if (!signal.aborted)` and `addEventListener(...)`, leaving the child alive until some later timeout or natural exit.
+- If the live-control `onSpawned` callback can throw, tear the child down before bubbling the error. Task 7.7 otherwise had a path where supervisor setup could fail synchronously while the spawned agent kept running.
 
 ### Workspace cycle in the adapter registry
 
@@ -114,7 +118,7 @@ ADR-0008 promises protocol blocks live at `oa-core/prompts/protocol-status.md` +
 
 ## Connection-error recovery patterns
 
-The session had ~6 implementer subagent timeouts (stream idle / `ECONNRESET`) over 56 commits. The recovery pattern that consistently worked:
+The session had ~6 implementer subagent timeouts (stream idle / `ECONNRESET`) over 63 commits. The recovery pattern that consistently worked:
 
 1. **Don't reattempt the same prompt blindly.** First check what landed via `git status` and `git log`.
 2. **If the implementer wrote files but didn't commit**, verify via tests/typecheck/lint, then commit directly with the exact message the implementer would have used. (This is a deliberate exception to "don't fix manually" — it's just landing already-correct work, not implementing.)
@@ -201,13 +205,13 @@ Reviewer's flag: this stub doesn't validate against `EventSchema`, so a writer-s
 
 ### oa-core test suite is fast
 
-376 tests in ~15 seconds (with builds). Each test file averages ~11 tests. The longest individual test runs are:
+385 tests in ~13 seconds (with builds). Each test file averages ~10 tests. The longest individual test runs are:
 
 - `ELOCKED` timeout test (~5s, by design — exercises proper-lockfile's full retry budget)
 - Cross-process contention tests (~1–1.5s, fork/spawn overhead)
 - `runPlan` integration tests (~1.5s each, real git repos in tmpdir)
 
-No flakes observed across the Phase 7 work once the child-import path in `pidfile.test.ts` moved off `process.cwd()` and the control-socket live-path regression was pinned in `controlSocket.test.ts`.
+No flakes observed across the Phase 7 work once the child-import path in `pidfile.test.ts` moved off `process.cwd()`, the control-socket live-path regression was pinned in `controlSocket.test.ts`, and the entry helper started cleaning up its process signal handlers on normal return.
 
 ### EventSchema validation cost
 
