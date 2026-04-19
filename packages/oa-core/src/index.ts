@@ -112,6 +112,14 @@ export type { GateOk, GateFail, GateResult } from './verify/gates.js';
 // surface tidy as Phase 6.5/6.6 add adjacent gate helpers.
 export * as review from './verify/review.js';
 export type { RunReviewerOpts, RunReviewerResult } from './verify/review.js';
+// Per-step context injector (ADR-0006, Task 6.4). Pure function the Phase 7
+// supervisor calls before every adapter.run to assemble a fresh markdown
+// prompt (header / status note / step spec / open issues / git context /
+// progress / findings / references / handoff / tail protocol). Namespaced
+// (`context.assemblePrompt`) to keep the bare name free for adjacent
+// injector helpers added in 6.5/6.6.
+export * as context from './verify/context.js';
+export type { AssemblePromptInput } from './verify/context.js';
 // AgentAdapter contract (ADR-0009). Types-only — adapter packages depend on
 // `oa-core`'s public surface and consume these without importing any runtime.
 export type { AgentAdapter, AgentId, AgentRunOpts, AgentRunResult } from './adapter/types.js';
