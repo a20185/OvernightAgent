@@ -48,6 +48,19 @@ function formatReference(ref: Reference): string {
   return `- **memory** \`${ref.src}\``;
 }
 
+/**
+ * Render the HANDOFF.md body for a parsed `Intake` + parsed `Step[]`.
+ *
+ * CONTRACT: this renderer assumes string fields in `intake` (title, project.dir,
+ * baseBranch, source.agent, executor/reviewer model, verify.command, etc.) are
+ * "markdown-safe" — they contain no embedded newlines, no unbalanced backticks,
+ * and no leading `#`. The renderer does not escape or sanitize them. Validation
+ * is the caller's responsibility (Task 4.4's intakeSubmit must enforce this at
+ * the IntakeSchema layer, OR sanitize before passing in).
+ *
+ * TODO(task-4.4): tighten IntakeSchema string fields with regex bounds (no `\n`,
+ * length caps, etc.) and remove this caveat once enforced upstream.
+ */
 export function renderHandoff(intake: Intake, steps: Step[]): string {
   const lines: string[] = [];
 
