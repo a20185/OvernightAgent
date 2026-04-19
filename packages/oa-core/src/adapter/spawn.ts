@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import { execa } from 'execa';
 import { assertAbs } from '../paths.js';
-import type { AgentRunResult } from './types.js';
+import type { AgentRunControl, AgentRunResult } from './types.js';
 
 /**
  * Inputs to the headless subprocess primitive. All path fields must be
@@ -23,7 +23,10 @@ export interface SpawnOpts {
   stdoutPath: string;
   stderrPath: string;
   signal: AbortSignal;
+  onSpawned?: (control: SpawnControl) => void;
 }
+
+export type SpawnControl = AgentRunControl;
 
 const SIGKILL_GRACE_MS = 500;
 
@@ -105,6 +108,10 @@ export async function spawnHeadless(opts: SpawnOpts): Promise<AgentRunResult> {
       }
     }, SIGKILL_GRACE_MS).unref();
   };
+
+  opts.onSpawned?.({
+    killNow: () => kill('signal'),
+  });
 
   subprocess.stdout?.on('data', (chunk: Buffer) => {
     // Sync write keeps capture-file ordering deterministic and avoids the

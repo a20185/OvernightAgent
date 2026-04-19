@@ -143,7 +143,13 @@ export { synthesizeFixContext } from './verify/fixLoop.js';
 export type { FixContext } from './verify/fixLoop.js';
 // AgentAdapter contract (ADR-0009). Types-only — adapter packages depend on
 // `oa-core`'s public surface and consume these without importing any runtime.
-export type { AgentAdapter, AgentId, AgentRunOpts, AgentRunResult } from './adapter/types.js';
+export type {
+  AgentAdapter,
+  AgentId,
+  AgentRunOpts,
+  AgentRunResult,
+  AgentRunControl,
+} from './adapter/types.js';
 // Headless subprocess primitive every adapter wraps (Task 5.2). Exposed on the
 // public surface so adapter packages (oa-adapter-claude, codex, opencode) can
 // import the helper without reaching into oa-core's internal layout. The
@@ -151,7 +157,7 @@ export type { AgentAdapter, AgentId, AgentRunOpts, AgentRunResult } from './adap
 // argument shape in their own type signatures. This pair plus the AgentAdapter
 // types above are the entire adapter-author public API.
 export { spawnHeadless } from './adapter/spawn.js';
-export type { SpawnOpts } from './adapter/spawn.js';
+export type { SpawnOpts, SpawnControl } from './adapter/spawn.js';
 // Adapter registry (Task 5.4). Lazy-loads `oa-adapter-<id>` packages and
 // caches each resolved instance. `__resetAdapterCacheForTest` is exported
 // alongside but is, as the name says, test-only — production callers should

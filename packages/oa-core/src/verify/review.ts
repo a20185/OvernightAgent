@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { randomBytes } from 'node:crypto';
-import type { AgentAdapter, AgentRunResult } from '../adapter/types.js';
+import type { AgentAdapter, AgentRunControl, AgentRunResult } from '../adapter/types.js';
 import type { OaReviewIssue } from '../schemas.js';
 import { assertAbs } from '../paths.js';
 import { parseTail } from './tail.js';
@@ -63,6 +63,7 @@ export interface RunReviewerOpts {
   /** Absolute capture path for reviewer stderr. */
   stderrPath: string;
   signal: AbortSignal;
+  onSpawned?: (control: AgentRunControl) => void;
 }
 
 export interface RunReviewerResult {
@@ -140,6 +141,7 @@ export async function runReviewer(opts: RunReviewerOpts): Promise<RunReviewerRes
       stdoutPath: opts.stdoutPath,
       stderrPath: opts.stderrPath,
       signal: opts.signal,
+      onSpawned: opts.onSpawned,
     });
   } finally {
     // Best-effort cleanup. A failure here (already unlinked, fs full, etc.)

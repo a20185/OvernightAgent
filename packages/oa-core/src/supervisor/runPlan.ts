@@ -1,8 +1,10 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { once } from 'node:events';
+import type { Server } from 'node:net';
 import { simpleGit } from 'simple-git';
 import { writeFileAtomic } from '../atomicJson.js';
-import { runDir, taskDir } from '../paths.js';
+import { runDir, socketPath, taskDir } from '../paths.js';
 import { readJson } from '../atomicJson.js';
 import {
   IntakeSchema,
@@ -26,7 +28,9 @@ import { synthesizeFixContext } from '../verify/fixLoop.js';
 import { parseTail } from '../verify/tail.js';
 import { runBootstrap } from './bootstrap.js';
 import { openEventWriter, type EventWriter } from '../events/writer.js';
-import type { AgentAdapter } from '../adapter/types.js';
+import { getAdapter } from '../adapter/registry.js';
+import { serve } from './controlSocket.js';
+import type { AgentAdapter, AgentRunControl } from '../adapter/types.js';
 
 /**
  * Task 7.3 — Supervisor outer loop (sequential v0).
@@ -81,10 +85,9 @@ import type { AgentAdapter } from '../adapter/types.js';
 export interface RunPlanOpts {
   planId: string;
   signal: AbortSignal;
-  /** v0 adapter resolution: caller supplies a factory by agentId.
-   *  Task 7.7 will route this through the registry from intake.executor.agent. */
-  workerAdapterFactory: (agentId: string) => AgentAdapter;
-  reviewerAdapterFactory: (agentId: string) => AgentAdapter;
+  /** Tests can override adapter resolution; production falls back to getAdapter(agentId). */
+  workerAdapterFactory?: (agentId: string) => AgentAdapter | Promise<AgentAdapter>;
+  reviewerAdapterFactory?: (agentId: string) => AgentAdapter | Promise<AgentAdapter>;
   /** Override of `<runDir(planId)>/events.jsonl`. Tests use this rarely; prod never. */
   eventsPath?: string;
 }
@@ -94,6 +97,7 @@ export type TaskOutcome =
   | 'done'
   | 'failed'
   | 'blocked-needs-human'
+  | 'stopped'
   | 'bootstrap-failed'
   | 'budget-exhausted';
 
@@ -107,13 +111,93 @@ export interface RunPlanResult {
 // `step.end` carries the step's final status. We map per-attempt outcomes onto
 // the StepStatusT enum so callers (PROGRESS.md, events.jsonl, the per-task
 // aggregator below) all read the same vocabulary.
-type StepOutcome = 'done' | 'failed' | 'blocked';
+type StepOutcome = 'done' | 'failed' | 'blocked' | 'pending';
+
+type StopMode = 'none' | 'graceful' | 'force-now';
+
+interface SupervisorLiveState {
+  planId: string;
+  currentTaskId: string | null;
+  currentStepN: number | null;
+  currentAttempt: number | null;
+  elapsedRunMs: number;
+  elapsedTaskMs: number | null;
+  elapsedStepMs: number | null;
+  budgetRemainingMs: number | null;
+}
+
+interface RunPlanRuntime {
+  stopMode: StopMode;
+  activeSpawn: AgentRunControl | null;
+  currentTaskId: string | null;
+  currentTaskStartedAt: number | null;
+  currentStepN: number | null;
+  currentStepStartedAt: number | null;
+  currentAttempt: number | null;
+  budgetDeadlineMs: number | null;
+}
 
 interface StepRunResult {
   outcome: StepOutcome;
   attemptsRun: number;
   /** Issues from the LAST reviewer pass, surfaced into events for post-mortem. */
   finalReviewIssues: OaReviewIssue[];
+}
+
+function snapshotLiveState(
+  planId: string,
+  startedAt: number,
+  runtime: RunPlanRuntime,
+): SupervisorLiveState {
+  const now = Date.now();
+  return {
+    planId,
+    currentTaskId: runtime.currentTaskId,
+    currentStepN: runtime.currentStepN,
+    currentAttempt: runtime.currentAttempt,
+    elapsedRunMs: now - startedAt,
+    elapsedTaskMs: runtime.currentTaskStartedAt === null ? null : now - runtime.currentTaskStartedAt,
+    elapsedStepMs: runtime.currentStepStartedAt === null ? null : now - runtime.currentStepStartedAt,
+    budgetRemainingMs:
+      runtime.budgetDeadlineMs === null ? null : Math.max(0, runtime.budgetDeadlineMs - now),
+  };
+}
+
+async function openControlSocket(
+  planId: string,
+  startedAt: number,
+  runtime: RunPlanRuntime,
+  gracefulStop: () => void,
+  forceStopNow: () => void,
+): Promise<Server> {
+  const server = serve(socketPath(planId), {
+    stop: async (message) => {
+      if (message.now) forceStopNow();
+      else gracefulStop();
+      return {
+        schemaVersion: 1,
+        type: 'stop.reply',
+        acknowledged: true,
+        mode: message.now ? 'force-now' : 'graceful',
+      };
+    },
+    status: async () => ({
+      schemaVersion: 1,
+      type: 'status.reply',
+      state: snapshotLiveState(planId, startedAt, runtime),
+    }),
+  });
+
+  if (!server.listening) {
+    await Promise.race([
+      once(server, 'listening'),
+      once(server, 'error').then(([err]) => {
+        throw err;
+      }),
+    ]);
+  }
+
+  return server;
 }
 
 /** Read + Zod-validate a per-task intake.json. Throws on missing/corrupt. */
@@ -171,6 +255,7 @@ async function runStep(
   taskFolder: string,
   events: EventWriter,
   parentSignal: AbortSignal,
+  runtime: RunPlanRuntime,
 ): Promise<StepRunResult> {
   // stepStartSha is captured ONCE at step start. Per-attempt rewind restores
   // the worktree TO this sha; the reviewer's diff is `stepStartSha..HEAD`,
@@ -178,6 +263,9 @@ async function runStep(
   const stepStartSha = await headSha(worktreeInfo.absRoot);
 
   await events.emit({ kind: 'step.start', taskId, stepN: step.n });
+  runtime.currentStepN = step.n;
+  runtime.currentStepStartedAt = Date.now();
+  runtime.currentAttempt = null;
 
   const maxLoops = intake.strategy.reviewFixLoop.maxLoops > 0 ? intake.strategy.reviewFixLoop.maxLoops : 1;
   const blockOn = intake.strategy.reviewFixLoop.blockOn;
@@ -260,6 +348,7 @@ async function runStep(
     });
 
     await events.emit({ kind: 'step.attempt.start', taskId, stepN: step.n, attempt });
+    runtime.currentAttempt = attempt;
 
     // Per-step abort controller chained off the parent signal. This lets a
     // future per-step timeout fire its own abort without nuking later steps,
@@ -282,8 +371,12 @@ async function runStep(
         stdoutPath,
         stderrPath,
         signal: stepAc.signal,
+        onSpawned: (control) => {
+          runtime.activeSpawn = control;
+        },
       });
     } finally {
+      runtime.activeSpawn = null;
       parentSignal.removeEventListener('abort', onParentAbort);
     }
     await events.emit({
@@ -302,6 +395,11 @@ async function runStep(
     // supervisor's reaction is the same: short-circuit, mark step failed,
     // exit attempt loop. Distinct events surface the killer for post-mortem.
     if (workerResult.killedBy) {
+      if (runtime.stopMode === 'force-now') {
+        await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'pending' });
+        stepOutcome = 'pending';
+        break;
+      }
       // Emit the dedicated kill-cause event AS WELL as the unified tail-fail
       // below. Reviewers/post-mortems that care about *why* the worker was
       // killed (timeout vs stdout-cap) read these; verify-pipeline-aware
@@ -381,8 +479,14 @@ async function runStep(
     // would otherwise be observed only after the script finishes. Emit the
     // attempt's terminal events so the events.jsonl stream stays consistent.
     if (parentSignal.aborted) {
-      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'failed' });
-      stepOutcome = intake.strategy.onFailure === 'halt' ? 'failed' : 'blocked';
+      const interruptedStatus = runtime.stopMode === 'force-now' ? 'pending' : 'failed';
+      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: interruptedStatus });
+      stepOutcome =
+        runtime.stopMode === 'force-now'
+          ? 'pending'
+          : intake.strategy.onFailure === 'halt'
+            ? 'failed'
+            : 'blocked';
       break;
     }
     const verifyCmdString = step.verify ?? intake.verify.command;
@@ -409,27 +513,52 @@ async function runStep(
     // adapter mid-flight, but we'd still pay for the prompt assembly and any
     // initial setup here — fail fast instead.
     if (parentSignal.aborted) {
-      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'failed' });
-      stepOutcome = intake.strategy.onFailure === 'halt' ? 'failed' : 'blocked';
+      const interruptedStatus = runtime.stopMode === 'force-now' ? 'pending' : 'failed';
+      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: interruptedStatus });
+      stepOutcome =
+        runtime.stopMode === 'force-now'
+          ? 'pending'
+          : intake.strategy.onFailure === 'halt'
+            ? 'failed'
+            : 'blocked';
       break;
     }
     const g = simpleGit(worktreeInfo.absRoot);
     const stepDiff = await g.raw(['diff', `${stepStartSha}..HEAD`]);
 
-    const reviewResult = await review.runReviewer({
-      adapter: reviewerAdapter,
-      model: intake.reviewer.model,
-      extraArgs: intake.reviewer.extraArgs,
-      promptPath: reviewerPromptPath,
-      stepDiff,
-      blockOn,
-      cwd: worktreeInfo.absRoot,
-      timeoutSec: intake.strategy.stepTimeoutSec,
-      stdoutCapBytes: intake.strategy.stepStdoutCapBytes,
-      stdoutPath: reviewerStdoutPath,
-      stderrPath: reviewerStderrPath,
-      signal: stepAc.signal,
-    });
+    let reviewResult: Awaited<ReturnType<typeof review.runReviewer>>;
+    try {
+      reviewResult = await review.runReviewer({
+        adapter: reviewerAdapter,
+        model: intake.reviewer.model,
+        extraArgs: intake.reviewer.extraArgs,
+        promptPath: reviewerPromptPath,
+        stepDiff,
+        blockOn,
+        cwd: worktreeInfo.absRoot,
+        timeoutSec: intake.strategy.stepTimeoutSec,
+        stdoutCapBytes: intake.strategy.stepStdoutCapBytes,
+        stdoutPath: reviewerStdoutPath,
+        stderrPath: reviewerStderrPath,
+        signal: stepAc.signal,
+        onSpawned: (control) => {
+          runtime.activeSpawn = control;
+        },
+      });
+    } finally {
+      runtime.activeSpawn = null;
+    }
+    if (
+      runtime.stopMode === 'force-now' &&
+      typeof reviewResult.detail === 'object' &&
+      reviewResult.detail !== null &&
+      'killedBy' in reviewResult.detail &&
+      (reviewResult.detail as { killedBy?: unknown }).killedBy === 'signal'
+    ) {
+      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'pending' });
+      stepOutcome = 'pending';
+      break;
+    }
     lastReviewIssues = reviewResult.issues;
 
     if (reviewResult.ok) {
@@ -478,9 +607,18 @@ async function runStep(
 
   // Mark the step's terminal status in PROGRESS.
   const stepStatusForProgress: StepStatusT =
-    stepOutcome === 'done' ? 'done' : stepOutcome === 'failed' ? 'failed' : 'blocked';
+    stepOutcome === 'done'
+      ? 'done'
+      : stepOutcome === 'failed'
+        ? 'failed'
+        : stepOutcome === 'pending'
+          ? 'pending'
+          : 'blocked';
   await progress.mark(taskFolder, step.n, stepStatusForProgress);
   await events.emit({ kind: 'step.end', taskId, stepN: step.n, status: stepStatusForProgress });
+  runtime.currentStepN = null;
+  runtime.currentStepStartedAt = null;
+  runtime.currentAttempt = null;
 
   return {
     outcome: stepOutcome,
@@ -491,6 +629,32 @@ async function runStep(
 
 export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
   const startedAt = Date.now();
+  const supervisorAc = new AbortController();
+  const onExternalAbort = (): void => {
+    supervisorAc.abort();
+  };
+  if (opts.signal.aborted) supervisorAc.abort();
+  else opts.signal.addEventListener('abort', onExternalAbort, { once: true });
+  const runtime: RunPlanRuntime = {
+    stopMode: 'none',
+    activeSpawn: null,
+    currentTaskId: null,
+    currentTaskStartedAt: null,
+    currentStepN: null,
+    currentStepStartedAt: null,
+    currentAttempt: null,
+    budgetDeadlineMs: null,
+  };
+  const gracefulStop = (): void => {
+    if (runtime.stopMode === 'force-now') return;
+    runtime.stopMode = 'graceful';
+    supervisorAc.abort();
+  };
+  const forceStopNow = (): void => {
+    runtime.stopMode = 'force-now';
+    runtime.activeSpawn?.killNow();
+    supervisorAc.abort();
+  };
 
   // (1) Load + validate the plan. Reject if absent or in a status that means
   //     it shouldn't be re-run via this path. 'sealed' is the canonical
@@ -509,11 +673,6 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
   const runDirAbs = runDir(opts.planId);
   await fs.mkdir(runDirAbs, { recursive: true });
 
-  // (4) Open the events writer. validate:false keeps the hot path lean; the
-  //     EventSchema test suite covers shape drift in CI.
-  const eventsPath = opts.eventsPath ?? path.resolve(runDirAbs, 'events.jsonl');
-  const events = await openEventWriter({ absPath: eventsPath, validate: false });
-
   // From here on, ANY throw must (a) emit run.error so events.jsonl is the
   // authoritative crash record, (b) flip the plan to a terminal status so it
   // doesn't get stuck at 'running', and (c) close the events writer so its
@@ -522,7 +681,21 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
   let planTerminalSet = false;
   let planOutcome: PlanOutcome = 'partial';
   const taskOutcomes: RunPlanResult['taskOutcomes'] = [];
+  let events: EventWriter | null = null;
+  let controlServer: Server | null = null;
   try {
+    // (4) Open the events writer. validate:false keeps the hot path lean; the
+    //     EventSchema test suite covers shape drift in CI.
+    const eventsPath = opts.eventsPath ?? path.resolve(runDirAbs, 'events.jsonl');
+    events = await openEventWriter({ absPath: eventsPath, validate: false });
+    controlServer = await openControlSocket(
+      opts.planId,
+      startedAt,
+      runtime,
+      gracefulStop,
+      forceStopNow,
+    );
+
     // (5) Emit run.start.
     await events.emit({
       kind: 'run.start',
@@ -542,6 +715,7 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
     const planBudgetSec =
       typeof sealed.overrides.planBudgetSec === 'number' ? sealed.overrides.planBudgetSec : 28800;
     const budgetDeadline = startedAt + planBudgetSec * 1000;
+    runtime.budgetDeadlineMs = budgetDeadline;
     const isBudgetExhausted = (): boolean => Date.now() >= budgetDeadline;
 
     // (7) Per-task outer loop.
@@ -565,7 +739,7 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
 
       // Signal-abort check: stop cleanly. Tasks not yet started leave their
       // inbox status untouched (still 'queued') — the operator can resume.
-      if (opts.signal.aborted) {
+      if (supervisorAc.signal.aborted) {
         abortedReason = 'user';
         halted = true;
         break;
@@ -577,6 +751,11 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
 
       await inbox.setStatus(taskId, 'running');
       await events.emit({ kind: 'task.start', taskId });
+      runtime.currentTaskId = taskId;
+      runtime.currentTaskStartedAt = Date.now();
+      runtime.currentStepN = null;
+      runtime.currentStepStartedAt = null;
+      runtime.currentAttempt = null;
 
       // Worktree.
       const wt = await worktree.create({
@@ -601,6 +780,11 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
           await inbox.setStatus(taskId, 'bootstrap-failed');
           await events.emit({ kind: 'task.end', taskId, status: 'bootstrap-failed' });
           taskOutcomes.push({ taskId, outcome: 'bootstrap-failed', stepsRun: 0 });
+          runtime.currentTaskId = null;
+          runtime.currentTaskStartedAt = null;
+          runtime.currentStepN = null;
+          runtime.currentStepStartedAt = null;
+          runtime.currentAttempt = null;
           if (intake.strategy.onFailure === 'halt') {
             halted = true;
             break;
@@ -612,8 +796,14 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
       // Resolve adapters via the injected factories. Production wiring (Task
       // 7.7) will route through `getAdapter(intake.executor.agent)`; the
       // factory-injection seam keeps tests free of registry plumbing.
-      const workerAdapter = opts.workerAdapterFactory(intake.executor.agent);
-      const reviewerAdapter = opts.reviewerAdapterFactory(intake.reviewer.agent);
+      const workerAdapter =
+        opts.workerAdapterFactory !== undefined
+          ? await opts.workerAdapterFactory(intake.executor.agent)
+          : await getAdapter(intake.executor.agent);
+      const reviewerAdapter =
+        opts.reviewerAdapterFactory !== undefined
+          ? await opts.reviewerAdapterFactory(intake.reviewer.agent)
+          : await getAdapter(intake.reviewer.agent);
 
       // Reviewer prompt path: intake.reviewer.promptPath or a default. The
       // default is materialized as a tmp file so review.runReviewer can read
@@ -645,7 +835,7 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
       // remaining steps can't make progress without manual intervention.
       let taskBlockedByStep = false;
       for (const step of stepsDoc.steps) {
-        if (opts.signal.aborted) {
+        if (supervisorAc.signal.aborted) {
           abortedReason = 'user';
           halted = true;
           break;
@@ -666,10 +856,21 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
           runDirAbs,
           taskFolder,
           events,
-          opts.signal,
+          supervisorAc.signal,
+          runtime,
         );
         stepsRun += 1;
         stepResults.push(stepResult);
+        if (supervisorAc.signal.aborted) {
+          abortedReason = 'user';
+          halted = true;
+        }
+        if (stepResult.outcome === 'pending') {
+          abortedReason = 'user';
+          halted = true;
+          break;
+        }
+        if (halted) break;
         if (stepResult.outcome === 'failed' && intake.strategy.onFailure === 'halt') {
           taskHaltedByStep = true;
           halted = true;
@@ -689,7 +890,16 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
       //   any step 'failed' (non-halt policy)  → task 'blocked-needs-human'
       //   all 'done'                           → task 'done'
       let taskOutcome: TaskOutcome;
-      if (stepResults.some((r) => r.outcome === 'failed') && intake.strategy.onFailure === 'halt') {
+      if (stepResults.length === 0 && halted && abortedReason === 'user') {
+        taskOutcome = 'stopped';
+      } else if (stepResults.length === 0 && halted && abortedReason === 'budget') {
+        taskOutcome = 'budget-exhausted';
+      } else if (stepResults.some((r) => r.outcome === 'pending')) {
+        taskOutcome = 'stopped';
+      } else if (
+        stepResults.some((r) => r.outcome === 'failed') &&
+        intake.strategy.onFailure === 'halt'
+      ) {
         taskOutcome = 'failed';
       } else if (
         stepResults.some((r) => r.outcome === 'blocked' || r.outcome === 'failed')
@@ -703,11 +913,20 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
           ? 'done'
           : taskOutcome === 'failed'
             ? 'failed'
+            : taskOutcome === 'stopped'
+              ? 'stopped'
+              : taskOutcome === 'budget-exhausted'
+                ? 'budget-exhausted'
             : 'blocked-needs-human';
 
       await events.emit({ kind: 'task.end', taskId, status: taskStatus });
       await inbox.setStatus(taskId, taskStatus);
       taskOutcomes.push({ taskId, outcome: taskOutcome, stepsRun });
+      runtime.currentTaskId = null;
+      runtime.currentTaskStartedAt = null;
+      runtime.currentStepN = null;
+      runtime.currentStepStartedAt = null;
+      runtime.currentAttempt = null;
 
       if (taskHaltedByStep) break;
       // taskBlockedByStep does NOT halt the plan as a whole — onFailure
@@ -740,9 +959,10 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
     // emit: if the writer is in a bad state itself, swallow that secondary
     // error so the original throw isn't shadowed.
     const message = err instanceof Error ? err.message : String(err);
-    await events.emit({ kind: 'run.error', message }).catch(() => undefined);
+    await events?.emit({ kind: 'run.error', message }).catch(() => undefined);
     throw err;
   } finally {
+    opts.signal.removeEventListener('abort', onExternalAbort);
     // Always flip the plan to a terminal status, even on throw, so it isn't
     // left at 'running' indefinitely. 'partial' is the right default for
     // unexpected crashes — it tells the operator "I started, I didn't finish,
@@ -753,7 +973,10 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
     // events.close() is idempotent and swallows write-after-close errors that
     // its own emit() would surface — see writer.ts. Always call it last so
     // the fd is released regardless of which path we exit through.
-    await events.close();
+    if (controlServer !== null) {
+      await new Promise<void>((resolve) => controlServer?.close(() => resolve())).catch(() => undefined);
+    }
+    await events?.close();
   }
 
   // Return.

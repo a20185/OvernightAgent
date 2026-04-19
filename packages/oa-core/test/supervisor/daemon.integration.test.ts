@@ -8,6 +8,7 @@ import { pidfile } from '../../src/paths.js';
 let TMP: string;
 let oldOaHome: string | undefined;
 let launchedPlanIds: string[] = [];
+let stubSupervisorEntry: string;
 
 beforeEach(async () => {
   TMP = path.resolve(os.tmpdir(), 'oa-test-daemon-' + Math.random().toString(36).slice(2));
@@ -15,6 +16,28 @@ beforeEach(async () => {
   oldOaHome = process.env.OA_HOME;
   process.env.OA_HOME = path.resolve(TMP, 'home');
   launchedPlanIds = [];
+  stubSupervisorEntry = path.resolve(TMP, 'stub-supervisor-entry.mjs');
+  await fs.writeFile(
+    stubSupervisorEntry,
+    [
+      "import * as fs from 'node:fs/promises';",
+      "import * as path from 'node:path';",
+      'const planId = process.argv[2];',
+      "const pidPath = path.resolve(process.env.OA_HOME ?? '', 'runs', planId, 'oa.pid');",
+      'await fs.mkdir(path.dirname(pidPath), { recursive: true });',
+      "await fs.writeFile(pidPath, `${process.pid}\\n`, 'utf8');",
+      'const stop = async (signal) => {',
+      "  process.stderr.write(JSON.stringify({ ts: new Date().toISOString(), kind: 'daemon.signal', signal }) + '\\n');",
+      "  await fs.unlink(pidPath).catch(() => undefined);",
+      '  process.exit(0);',
+      '};',
+      "process.once('SIGTERM', () => { void stop('SIGTERM'); });",
+      "process.once('SIGINT', () => { void stop('SIGINT'); });",
+      'setInterval(() => {}, 60_000);',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
 });
 
 afterEach(async () => {
@@ -137,6 +160,7 @@ async function exerciseSignal(signal: 'SIGTERM' | 'SIGINT'): Promise<void> {
   const exitCodes: number[] = [];
 
   const launcher = detachAndRun(planId, {
+    supervisorEntry: stubSupervisorEntry,
     exit: (code) => {
       exitCodes.push(code);
     },

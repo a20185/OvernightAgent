@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { assertId } from '../ids.js';
 import { acquire, release } from './pidfile.js';
+import { runPlan } from './runPlan.js';
 
 /**
  * Minimal supervisor daemon entry scaffold for Task 7.4.
@@ -15,16 +16,15 @@ import { acquire, release } from './pidfile.js';
 export async function runSupervisorEntry(planId: string): Promise<void> {
   assertId(planId);
 
-  const keepAlive = setInterval(() => {}, 60_000);
-  let resolveStop: () => void = () => {};
+  const ac = new AbortController();
+  let stopSignal: NodeJS.Signals | null = null;
   let stopped = false;
   let ownsPidfile = false;
-  const stopPromise = new Promise<void>((resolve) => {
-    resolveStop = resolve;
-  });
   const stop = async (signal: NodeJS.Signals): Promise<void> => {
     if (stopped) return;
     stopped = true;
+    stopSignal = signal;
+    ac.abort();
     fs.writeSync(
       2,
       JSON.stringify({
@@ -33,15 +33,6 @@ export async function runSupervisorEntry(planId: string): Promise<void> {
         signal,
       }) + '\n',
     );
-    if (ownsPidfile) {
-      try {
-        await release(planId);
-      } catch {
-        /* ignore */
-      }
-    }
-    clearInterval(keepAlive);
-    resolveStop();
   };
   process.once('SIGTERM', () => {
     void stop('SIGTERM');
@@ -58,7 +49,21 @@ export async function runSupervisorEntry(planId: string): Promise<void> {
     return;
   }
 
-  await stopPromise;
+  try {
+    await runPlan({
+      planId,
+      signal: ac.signal,
+    });
+  } finally {
+    if (ownsPidfile) {
+      try {
+        await release(planId);
+      } catch {
+        /* ignore */
+      }
+    }
+    void stopSignal;
+  }
 }
 
 const mainArg = process.argv[1];

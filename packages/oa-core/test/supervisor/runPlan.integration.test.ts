@@ -6,9 +6,10 @@ import { simpleGit } from 'simple-git';
 import { runPlan } from '../../src/supervisor/runPlan.js';
 import { ensureHomeLayout } from '../../src/home.js';
 import { writeFileAtomic, writeJsonAtomic } from '../../src/atomicJson.js';
-import { taskDir, runDir } from '../../src/paths.js';
+import { taskDir, runDir, socketPath } from '../../src/paths.js';
 import * as inbox from '../../src/stores/inbox.js';
 import * as plan from '../../src/stores/plan.js';
+import { request as controlRequest } from '../../src/supervisor/controlSocket.js';
 import type {
   AgentAdapter,
   AgentRunOpts,
@@ -45,6 +46,7 @@ interface MockScript {
   exitCode?: number | null;
   killedBy?: 'timeout' | 'stdoutCap' | 'signal' | null;
   sideEffect?: (cwd: string) => Promise<void>;
+  waitForSignal?: boolean;
 }
 
 interface MockAdapter extends AgentAdapter {
@@ -66,6 +68,11 @@ function makeStubAdapter(scripts: MockScript[]): MockAdapter {
       const i = state.calls;
       state.calls += 1;
       const s = scripts[i] ?? scripts[scripts.length - 1] ?? {};
+      if (s.waitForSignal) {
+        await new Promise<void>((resolve) => {
+          opts.signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+      }
       await fs.writeFile(opts.stdoutPath, s.stdoutBody ?? '', 'utf8');
       await fs.writeFile(opts.stderrPath, '');
       if (s.sideEffect) await s.sideEffect(opts.cwd);
@@ -191,13 +198,42 @@ async function readEvents(planId: string): Promise<Array<Record<string, unknown>
     .map((l) => JSON.parse(l) as Record<string, unknown>);
 }
 
+async function waitForSocket(planId: string, timeoutMs = 5_000): Promise<string> {
+  const p = socketPath(planId);
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      await fs.access(p);
+      return p;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  throw new Error(`timed out waiting for control socket: ${p}`);
+}
+
+async function waitForStatus(
+  sock: string,
+  predicate: (state: Record<string, unknown>) => boolean,
+  timeoutMs = 5_000,
+): Promise<Record<string, unknown>> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const reply = await controlRequest(sock, { schemaVersion: 1, type: 'status' });
+    const state = (reply as { state?: Record<string, unknown> }).state;
+    if (state && predicate(state)) return state;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for matching status from control socket: ${sock}`);
+}
+
 describe('runPlan integration (Task 7.3)', () => {
   let TMP: string;
   let REPO: string;
   let REVIEWER_PROMPT: string;
 
   beforeEach(async () => {
-    TMP = path.resolve(os.tmpdir(), 'oa-test-runplan-' + Math.random().toString(36).slice(2));
+    TMP = path.resolve(os.tmpdir(), 'oarp-' + Math.random().toString(36).slice(2, 8));
     await fs.mkdir(TMP, { recursive: true });
     process.env.OA_HOME = path.resolve(TMP, 'home');
     await ensureHomeLayout();
@@ -556,5 +592,231 @@ describe('runPlan integration (Task 7.3)', () => {
     });
     expect(r.outcome).toBe('done');
     expect(junkExistedAtAttempt2).toBe(false);
+  });
+
+  it('status over control socket reports the live task, step, attempt, elapsed, and budget fields', async () => {
+    const f = await makeTaskFixture(REPO, REVIEWER_PROMPT, { stepCount: 1 });
+    const sealed = await plan.create({
+      taskListIds: [f.taskId],
+      overrides: { planBudgetSec: 123 },
+    });
+
+    const worker = makeStubAdapter([
+      {
+        waitForSignal: true,
+        stdoutBody: `waiting\n${OK_STATUS_BLOCK}\n`,
+        sideEffect: (cwd) => commitWork(cwd, 'socket-status'),
+      },
+    ]);
+    const reviewer = makeStubAdapter([{ stdoutBody: EMPTY_REVIEW_BLOCK }]);
+    const ac = new AbortController();
+
+    const runPromise = runPlan({
+      planId: sealed.id,
+      signal: ac.signal,
+      workerAdapterFactory: () => worker,
+      reviewerAdapterFactory: () => reviewer,
+    });
+
+    const sock = await waitForSocket(sealed.id);
+    const liveState = await waitForStatus(sock, (state) => {
+      return state.currentTaskId === f.taskId && state.currentStepN === 1 && state.currentAttempt === 1;
+    });
+    const statusReply = await controlRequest(sock, { schemaVersion: 1, type: 'status' });
+    expect(statusReply).toMatchObject({
+      schemaVersion: 1,
+      type: 'status.reply',
+      state: {
+        planId: sealed.id,
+        currentTaskId: f.taskId,
+        currentStepN: 1,
+        currentAttempt: 1,
+        elapsedRunMs: expect.any(Number),
+        elapsedTaskMs: expect.any(Number),
+        elapsedStepMs: expect.any(Number),
+        budgetRemainingMs: expect.any(Number),
+      },
+    });
+    expect(liveState.currentStepN).toBe(1);
+
+    ac.abort();
+    const result = await runPromise;
+    expect(result.outcome).toBe('stopped');
+  });
+
+  it('graceful stop over control socket aborts the run and exits stopped', async () => {
+    const f = await makeTaskFixture(REPO, REVIEWER_PROMPT, { stepCount: 1 });
+    const sealed = await plan.create({ taskListIds: [f.taskId] });
+
+    const worker = makeStubAdapter([
+      {
+        waitForSignal: true,
+        stdoutBody: `waiting\n${OK_STATUS_BLOCK}\n`,
+        sideEffect: (cwd) => commitWork(cwd, 'socket-stop'),
+      },
+    ]);
+    const reviewer = makeStubAdapter([{ stdoutBody: EMPTY_REVIEW_BLOCK }]);
+
+    const runPromise = runPlan({
+      planId: sealed.id,
+      signal: new AbortController().signal,
+      workerAdapterFactory: () => worker,
+      reviewerAdapterFactory: () => reviewer,
+    });
+
+    const sock = await waitForSocket(sealed.id);
+    await waitForStatus(sock, (state) => {
+      return state.currentTaskId === f.taskId && state.currentStepN === 1 && state.currentAttempt === 1;
+    });
+    const stopReply = await controlRequest(sock, { schemaVersion: 1, type: 'stop', now: false });
+    expect(stopReply).toMatchObject({
+      schemaVersion: 1,
+      type: 'stop.reply',
+      acknowledged: true,
+      mode: 'graceful',
+    });
+
+    const result = await runPromise;
+    expect(result.outcome).toBe('stopped');
+
+    const reread = await plan.get(sealed.id);
+    expect(reread?.status).toBe('stopped');
+  });
+
+  it('force stop now kills the in-flight worker, marks the step pending, and exits', async () => {
+    const f = await makeTaskFixture(REPO, REVIEWER_PROMPT, { stepCount: 1 });
+    const sealed = await plan.create({ taskListIds: [f.taskId] });
+    let killNow: (() => void) | undefined;
+
+    const worker: MockAdapter = {
+      id: 'claude',
+      defaultModel: 'opus',
+      capabilities: () => ({ supportsSessionId: false, supportsStructuredOutput: false }),
+      async run(opts: AgentRunOpts): Promise<AgentRunResult> {
+        opts.onSpawned?.({
+          killNow: () => {
+            killNow?.();
+          },
+        });
+        await new Promise<AgentRunResult>((resolve) => {
+          killNow = () =>
+            resolve({
+              exitCode: null,
+              durationMs: 1,
+              timedOut: false,
+              stdoutCapHit: false,
+              killedBy: 'signal',
+            });
+        });
+        await fs.writeFile(opts.stdoutPath, '', 'utf8');
+        await fs.writeFile(opts.stderrPath, '', 'utf8');
+        return {
+          exitCode: null,
+          durationMs: 1,
+          timedOut: false,
+          stdoutCapHit: false,
+          killedBy: 'signal',
+        };
+      },
+      callCount: () => 1,
+    };
+    const reviewer = makeStubAdapter([{ stdoutBody: EMPTY_REVIEW_BLOCK }]);
+
+    const runPromise = runPlan({
+      planId: sealed.id,
+      signal: new AbortController().signal,
+      workerAdapterFactory: () => worker,
+      reviewerAdapterFactory: () => reviewer,
+    });
+
+    const sock = await waitForSocket(sealed.id);
+    const start = Date.now();
+    while (killNow === undefined && Date.now() - start < 5_000) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(killNow).toBeTypeOf('function');
+    const stopReply = await controlRequest(sock, { schemaVersion: 1, type: 'stop', now: true });
+    expect(stopReply).toMatchObject({
+      schemaVersion: 1,
+      type: 'stop.reply',
+      acknowledged: true,
+      mode: 'force-now',
+    });
+
+    const result = await runPromise;
+    expect(result.outcome).toBe('stopped');
+
+    const progressMd = await fs.readFile(path.resolve(f.taskFolder, 'PROGRESS.md'), 'utf8');
+    expect(progressMd).toMatch(/\| 1 \| pending \|/);
+
+    const events = await readEvents(sealed.id);
+    const last = events[events.length - 1] as { kind?: string; reason?: string };
+    expect(last.kind).toBe('run.stop');
+    expect(last.reason).toBe('user');
+  });
+
+  it('force stop now during reviewer kill marks the step pending and exits', async () => {
+    const f = await makeTaskFixture(REPO, REVIEWER_PROMPT, { stepCount: 1 });
+    const sealed = await plan.create({ taskListIds: [f.taskId] });
+    let reviewerKillNow: (() => void) | undefined;
+
+    const worker = makeStubAdapter([
+      {
+        stdoutBody: `done\n${OK_STATUS_BLOCK}\n`,
+        sideEffect: (cwd) => commitWork(cwd, 'reviewer-force-stop'),
+      },
+    ]);
+    const reviewer: MockAdapter = {
+      id: 'claude',
+      defaultModel: 'opus',
+      capabilities: () => ({ supportsSessionId: false, supportsStructuredOutput: false }),
+      async run(opts: AgentRunOpts): Promise<AgentRunResult> {
+        opts.onSpawned?.({
+          killNow: () => {
+            reviewerKillNow?.();
+          },
+        });
+        await new Promise<void>((resolve) => {
+          reviewerKillNow = () => resolve();
+        });
+        await fs.writeFile(opts.stdoutPath, '', 'utf8');
+        await fs.writeFile(opts.stderrPath, '', 'utf8');
+        return {
+          exitCode: null,
+          durationMs: 1,
+          timedOut: false,
+          stdoutCapHit: false,
+          killedBy: 'signal',
+        };
+      },
+      callCount: () => 1,
+    };
+
+    const runPromise = runPlan({
+      planId: sealed.id,
+      signal: new AbortController().signal,
+      workerAdapterFactory: () => worker,
+      reviewerAdapterFactory: () => reviewer,
+    });
+
+    const sock = await waitForSocket(sealed.id);
+    const start = Date.now();
+    while (reviewerKillNow === undefined && Date.now() - start < 5_000) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(reviewerKillNow).toBeTypeOf('function');
+    const stopReply = await controlRequest(sock, { schemaVersion: 1, type: 'stop', now: true });
+    expect(stopReply).toMatchObject({
+      schemaVersion: 1,
+      type: 'stop.reply',
+      acknowledged: true,
+      mode: 'force-now',
+    });
+
+    const result = await runPromise;
+    expect(result.outcome).toBe('stopped');
+
+    const progressMd = await fs.readFile(path.resolve(f.taskFolder, 'PROGRESS.md'), 'utf8');
+    expect(progressMd).toMatch(/\| 1 \| pending \|/);
   });
 });

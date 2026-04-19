@@ -64,6 +64,7 @@ export const adapter: AgentAdapter = {
       stdoutPath: opts.stdoutPath,
       stderrPath: opts.stderrPath,
       signal: opts.signal,
+      onSpawned: opts.onSpawned,
     });
 
     // Parse session_id AFTER the spawn returns — the capture file is now

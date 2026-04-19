@@ -38,6 +38,11 @@ export interface AgentRunOpts {
   stdoutPath: string;
   stderrPath: string;
   signal: AbortSignal;
+  onSpawned?: (control: AgentRunControl) => void;
+}
+
+export interface AgentRunControl {
+  killNow(): void;
 }
 
 /**

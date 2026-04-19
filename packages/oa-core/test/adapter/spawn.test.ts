@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { spawnHeadless } from '../../src/adapter/spawn.js';
+import type { SpawnControl } from '../../src/adapter/spawn.js';
 
 // -----------------------------------------------------------------------------
 // Integration tests for the low-level spawn primitive. We use `process.execPath`
@@ -152,6 +153,36 @@ describe('spawnHeadless', () => {
     expect(result.exitCode).toBeNull();
     expect(result.timedOut).toBe(false);
     expect(result.stdoutCapHit).toBe(false);
+  });
+
+  it('exposes a live control handle that can SIGTERM the child directly', async () => {
+    const { stdoutPath, stderrPath } = paths();
+    const ac = new AbortController();
+    let control: SpawnControl | undefined;
+    const resultPromise = spawnHeadless({
+      command: process.execPath,
+      args: ['-e', 'setInterval(() => {}, 1000)'],
+      cwd: TMP,
+      timeoutSec: 30,
+      stdoutCapBytes: 1_000_000,
+      stdoutPath,
+      stderrPath,
+      signal: ac.signal,
+      onSpawned: (value) => {
+        control = value;
+      },
+    });
+
+    const start = Date.now();
+    while (control === undefined && Date.now() - start < 2_000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(control).toBeDefined();
+
+    control?.killNow();
+    const result = await resultPromise;
+    expect(result.killedBy).toBe('signal');
+    expect(result.exitCode).toBeNull();
   });
 
   it('rejects relative cwd / stdoutPath / stderrPath via assertAbs', async () => {
