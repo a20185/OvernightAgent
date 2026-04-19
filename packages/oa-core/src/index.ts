@@ -57,7 +57,11 @@ export {
   TaskStatus,
   PlanStatus,
   StepStatus,
-  AgentId,
+  // The zod enum is re-exported as `AgentIdSchema` to free the bare `AgentId`
+  // name for the literal-string TS type from `adapter/types.ts` (ADR-0009).
+  // Internal `schemas.ts` references still spell it `AgentId` — only the
+  // public re-export is aliased.
+  AgentId as AgentIdSchema,
   CommitMode,
   OnFailure,
   ReviewPriority,
@@ -77,3 +81,6 @@ export type {
   PlanStatusT,
   StepStatusT,
 } from './schemas.js';
+// AgentAdapter contract (ADR-0009). Types-only — adapter packages depend on
+// `oa-core`'s public surface and consume these without importing any runtime.
+export type { AgentAdapter, AgentId, AgentRunOpts, AgentRunResult } from './adapter/types.js';
