@@ -92,3 +92,8 @@ export type { AgentAdapter, AgentId, AgentRunOpts, AgentRunResult } from './adap
 // types above are the entire adapter-author public API.
 export { spawnHeadless } from './adapter/spawn.js';
 export type { SpawnOpts } from './adapter/spawn.js';
+// Adapter registry (Task 5.4). Lazy-loads `oa-adapter-<id>` packages and
+// caches each resolved instance. `__resetAdapterCacheForTest` is exported
+// alongside but is, as the name says, test-only — production callers should
+// never need it. Phase 7's supervisor consumes `getAdapter` exclusively.
+export { getAdapter, __resetAdapterCacheForTest } from './adapter/registry.js';

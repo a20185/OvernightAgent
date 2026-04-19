@@ -19,6 +19,9 @@
     "zod": "~4.3.6"
   },
   "devDependencies": {
-    "@types/proper-lockfile": "~4.1.4"
+    "@types/proper-lockfile": "~4.1.4",
+    "oa-adapter-claude": "workspace:*",
+    "oa-adapter-codex": "workspace:*",
+    "oa-adapter-opencode": "workspace:*"
   }
 }
