@@ -26,6 +26,10 @@ export type { CreatePlanOpts } from './stores/plan.js';
 // Intake parser: pure-function front door for slash-command shims.
 export * as parseSteps from './intake/parseSteps.js';
 export type { ParsedStep, ParseResult } from './intake/parseSteps.js';
+// Tiered reference materializer (ADR-0007). Namespaced so callers spell
+// `references.materializeReferences(...)` and types stay discoverable.
+export * as references from './intake/references.js';
+export type { ReferenceInput, MaterializedRef } from './intake/references.js';
 export {
   ID_REGEX,
   IdSchema,
