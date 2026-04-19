@@ -1,0 +1,19 @@
+#!/bin/sh
+# Mock claude for testing — emits stream-json output then exits 0.
+#
+# Ignores its argv; the adapter passes a real argv but we don't need to parse
+# it to validate the adapter's behaviour. The malformed line is intentional —
+# the adapter's session-id parser MUST tolerate non-JSON lines without throwing.
+#
+# Behaviour is selectable via env vars set by the test:
+#   MOCK_CLAUDE_NO_SESSION=1 → omit the init event (parser should return undefined)
+#   MOCK_CLAUDE_EMPTY=1      → emit nothing at all (parser should return undefined)
+if [ -n "$MOCK_CLAUDE_EMPTY" ]; then
+  exit 0
+fi
+if [ -z "$MOCK_CLAUDE_NO_SESSION" ]; then
+  echo '{"type":"system","subtype":"init","session_id":"sess_test_123","model":"opus"}'
+fi
+echo 'this is a malformed line that is not JSON'
+echo '{"type":"text","text":"hello from mock claude"}'
+exit 0
