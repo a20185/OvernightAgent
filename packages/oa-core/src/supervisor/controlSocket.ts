@@ -87,6 +87,55 @@ function closeOnFinished(socket: net.Socket, payload: Buffer): void {
   socket.end(payload);
 }
 
+function isRecoverableProbeError(err: NodeJS.ErrnoException): boolean {
+  return err.code === 'ECONNREFUSED' || err.code === 'ENOENT' || err.code === 'ENOTSOCK';
+}
+
+function emitServerError(server: net.Server, err: NodeJS.ErrnoException): void {
+  process.nextTick(() => {
+    server.emit('error', err);
+  });
+}
+
+function listenWithStaleCleanup(server: net.Server, absPath: string): void {
+  if (!fs.existsSync(absPath)) {
+    server.listen(absPath);
+    return;
+  }
+
+  const probe = net.createConnection(absPath);
+  let settled = false;
+
+  const finish = (fn: () => void): void => {
+    if (settled) return;
+    settled = true;
+    probe.destroy();
+    fn();
+  };
+
+  probe.once('connect', () => {
+    const err = new Error(`control socket already in use: ${absPath}`) as NodeJS.ErrnoException;
+    err.code = 'EADDRINUSE';
+    finish(() => {
+      emitServerError(server, err);
+    });
+  });
+
+  probe.once('error', (err) => {
+    const socketErr = err as NodeJS.ErrnoException;
+    if (isRecoverableProbeError(socketErr)) {
+      finish(() => {
+        unlinkIfPresent(absPath);
+        server.listen(absPath);
+      });
+      return;
+    }
+    finish(() => {
+      emitServerError(server, socketErr);
+    });
+  });
+}
+
 /**
  * Control socket server for the supervisor daemon.
  *
@@ -98,7 +147,6 @@ function closeOnFinished(socket: net.Socket, payload: Buffer): void {
 export function serve(absPath: string, handlers: ControlHandlers): net.Server {
   assertAbs(absPath);
   fs.mkdirSync(path.dirname(absPath), { recursive: true });
-  unlinkIfPresent(absPath);
 
   const server = net.createServer((socket) => {
     let buffer = Buffer.alloc(0);
@@ -136,7 +184,7 @@ export function serve(absPath: string, handlers: ControlHandlers): net.Server {
     unlinkIfPresent(absPath);
   });
 
-  server.listen(absPath);
+  listenWithStaleCleanup(server, absPath);
   return server;
 }
 

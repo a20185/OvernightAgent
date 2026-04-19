@@ -122,4 +122,45 @@ describe('controlSocket', () => {
 
     await expect(fs.access(p)).rejects.toMatchObject({ code: 'ENOENT' });
   });
+
+  it('does not steal the path from an already-live socket server', async () => {
+    const p = socketPath(VALID_PLAN_ID);
+    const first = serve(p, {
+      stop: async () => ({
+        schemaVersion: 1,
+        type: 'stop.reply',
+        owner: 'first',
+      }),
+      status: async () => ({
+        schemaVersion: 1,
+        type: 'status.reply',
+        owner: 'first',
+      }),
+    });
+    servers.push(first);
+    await waitForListening(first);
+
+    const second = serve(p, {
+      stop: async () => ({
+        schemaVersion: 1,
+        type: 'stop.reply',
+        owner: 'second',
+      }),
+      status: async () => ({
+        schemaVersion: 1,
+        type: 'status.reply',
+        owner: 'second',
+      }),
+    });
+
+    const [err] = (await once(second, 'error')) as [NodeJS.ErrnoException];
+    expect(err.code).toBe('EADDRINUSE');
+
+    const reply = await request(p, { schemaVersion: 1, type: 'status' });
+    expect(reply).toMatchObject({
+      schemaVersion: 1,
+      type: 'status.reply',
+      owner: 'first',
+    });
+  });
 });

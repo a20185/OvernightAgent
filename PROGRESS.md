@@ -1,8 +1,8 @@
 # OvernightAgent — Implementation Progress
 
-**Snapshot at:** Task 7.5 checkpoint on `dev`
-**Total commits on dev:** 59 after the Task 7.5 checkpoint (2 design + 57 implementation/checkpoint)
-**Workspace tests:** 383 passing (oa-core 372, oa-adapter-claude 6, oa-cli 3, 2 adapter smoke)
+**Snapshot at:** Task 7.6 checkpoint on `dev`
+**Total commits on dev:** 61 after the Task 7.6 checkpoint (2 design + 59 implementation/checkpoint)
+**Workspace tests:** 387 passing (oa-core 376, oa-adapter-claude 6, oa-cli 3, 2 adapter smoke)
 
 ---
 
@@ -17,7 +17,7 @@
 | 4 | Intake pipeline | ✅ done | 4 sub-tasks (with fix-loop on 4.3) | parseSteps/references/handoff/submit |
 | 5 | AgentAdapter + claude | ✅ done | 4 sub-tasks (clean) | types/spawnHeadless/claude/registry |
 | 6 | Verify pipeline + fix loop | ✅ done | 7 sub-tasks (with small fix-up on 6.5 schemas) | tail/gates/reviewer/context/state/fixLoop + integration test |
-| **7** | **Supervisor / daemon / socket / resume** | **5/8** | runPlan + daemonization + pidfile lifecycle done | Control socket, socket wiring, and resume still pending |
+| **7** | **Supervisor / daemon / socket / resume** | **6/8** | runPlan + daemonization + pidfile lifecycle + control socket done | Socket wiring and resume still pending |
 | 8 | oa-cli surface | ⬜ pending | 10 sub-tasks queued | Each command wraps oa-core APIs |
 | 9 | SUMMARY.md renderer | ⬜ pending | 3 sub-tasks queued | events reader + renderer + auto-render hook |
 | 10 | codex + opencode adapters | ⬜ pending | 3 sub-tasks queued | Mirror oa-adapter-claude shape |
@@ -34,8 +34,8 @@
 | 7.2 | Bootstrap runner | ✅ | `41d615b` | Empty script no-ops; tmp script chmod 755 + cleanup in finally; widened TaskBootstrapEnd schema variant |
 | 7.3 | Supervisor outer loop | ✅ | `0ea961e` + fix-up `200829b` | 668 LOC source + 550 LOC tests + 6 integration scenarios. Fix-up addressed 8 Important review items (try/finally, abort checks, blocked-step exit, run.error emission, dedicated step.timeout/stdoutCapHit events, etc.) |
 | 7.4 | Daemonization | ✅ | `4be272f` | `detachAndRun` + child entry scaffold + integration coverage; review fix-ups caught fd-shape drift, JSONL corruption risk, startup signal race, false-success missing-entry path, and launcher-exit test gap |
-| 7.5 | Pidfile lifecycle | ✅ | `feat(core): pidfile lifecycle` (current tip) | `proper-lockfile`-guarded `acquire/release/isStale`, entry wired through helper, startup-ownership regression test, and true cross-process contention coverage |
-| 7.6 | Control socket | ⬜ next | — | Unix domain socket per ADR-0012 (supersedes SIGUSR1 from ADR-0010); JSON request/reply; cleans stale sock file |
+| 7.5 | Pidfile lifecycle | ✅ | `18cec8b` | `proper-lockfile`-guarded `acquire/release/isStale`, entry wired through helper, startup-ownership regression test, and true cross-process contention coverage |
+| 7.6 | Control socket | ✅ | `2b8d50d` + `fix(core): preserve live control socket` (current tip) | Standalone AF_UNIX request/reply helper with `schemaVersion: 1`, stale-socket cleanup, server-close unlink, and regression coverage that a second `serve()` cannot steal a live socket path |
 | 7.7 | Wire socket into supervisor | ⬜ | — | `stop {now:false}` → graceful abort; `stop {now:true}` → SIGTERM agent; `status` → live state |
 | 7.8 | Resume protocol | ⬜ | — | Detect stale pidfile, rewindToHead in-flight worktrees, mark steps pending, re-enter outer loop |
 
@@ -115,18 +115,18 @@ Suggestions level (from the Task 7.3 code-quality review):
 
 | Package | Files | Tests |
 |---|---|---|
-| oa-core | 33 | 372 |
+| oa-core | 34 | 376 |
 | oa-adapter-claude | 2 | 6 |
 | oa-adapter-codex | 1 | 1 (smoke) |
 | oa-adapter-opencode | 1 | 1 (smoke) |
 | oa-cli | 2 | 3 |
-| **Total** | **39** | **383** |
+| **Total** | **40** | **387** |
 
 ---
 
 ## Open ADRs
 
-12 ADRs at `docs/adr/`. All `Status: Accepted`. ADR-0012 (control socket) supersedes the SIGUSR1 part of ADR-0010 (process model). ADR-0013 (eslint enforcement gaps) added during Task 0.2.
+13 ADRs at `docs/adr/`. All `Status: Accepted`. ADR-0012 (control socket) supersedes the SIGUSR1 part of ADR-0010 (process model). ADR-0013 (eslint enforcement gaps) added during Task 0.2.
 
 | # | Title | Status |
 |---|---|---|

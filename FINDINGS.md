@@ -1,6 +1,6 @@
 # OvernightAgent — Implementation Findings
 
-Lessons, gotchas, and design refinements discovered during the 35 tasks completed so far. Useful when resuming or making analogous decisions in remaining tasks.
+Lessons, gotchas, and design refinements discovered during the 36 tasks completed so far. Useful when resuming or making analogous decisions in remaining tasks.
 
 ---
 
@@ -15,6 +15,7 @@ Every task in this codebase had failing-test-then-passing-test evidence in the i
 - Task 7.1 (events writer): naive `appendFile` per emit failed the 50-concurrent-emit ordering test. Chained-promise FIFO fix.
 - Task 7.3 (supervisor): drop a junk file between attempts inside the worker callback, probe for it on attempt 2 — proves the rewind happens via the production code path, not synthetic.
 - Task 7.5 (pidfile lifecycle): the initial in-process race test was too weak; replacing it with two real Node children importing the built `dist` helper exposed path-resolution mistakes in the harness and ultimately pinned the true single-winner guarantee.
+- Task 7.6 (control socket): the initial happy-path socket tests passed even though a second `serve()` could unlink a live socket path and silently steal future clients. A focused regression test that started two servers on the same path forced the implementation to distinguish stale leftovers from live listeners.
 
 ### File-path-wrapped errors
 
@@ -65,6 +66,7 @@ The two-stage review (spec compliance → code quality) found bugs the implement
 - **Task 1.5** (schemas): `parseInt` on `git rev-list --count` output could return NaN if git ever emits a warning to stdout before the count. NaN compares false to any threshold, silently failing the verify gate as "no commits". Fix: `Number.isFinite` guard.
 - **Task 2.4** (worktree.commitsSince): same NaN concern; same guard added.
 - **Task 7.5** (pidfile lifecycle): the first helper version used a check-then-overwrite write path, which let two contenders both “succeed” under contention. Review forced the live/stale check and rewrite into a single `proper-lockfile` critical section. A second review also caught the startup-signal bug where `runSupervisorEntry` could release another daemon's pidfile before ownership was established; fixed with an `ownsPidfile` gate plus a focused entry regression test.
+- **Task 7.6** (control socket): the first `serve()` implementation unlinked any pre-existing socket path before bind. That satisfied the stale-socket test but let a second live server steal the pathname from the first daemon, breaking future clients without ever surfacing `EADDRINUSE`. Fix: probe the existing socket path first, only unlink on connect-failure (`ECONNREFUSED` / `ENOTSOCK` / `ENOENT`), and pin the behavior with a live-socket regression test.
 
 ### Real schema/contract drift
 
@@ -169,6 +171,10 @@ The markdown is regenerated from the JSON on every mutation; never the other way
 
 Task 7.4's daemon integration test initially passed green but could leak detached background processes on a red run. The final harness tracks launched planIds and best-effort `SIGTERM`s/`SIGKILL`s them in `afterEach`. Any future detached-process or socket-server test should do the same, or CI/dev machines will accumulate orphans when assertions fail mid-test.
 
+### "Stale cleanup" must not clobber live IPC endpoints
+
+Task 7.6 exposed an easy Unix-socket footgun: blindly unlinking an existing socket path before `listen()` makes stale-file recovery look correct in tests, but it also lets a second live server steal the pathname from the first one. For socket/FIFO style IPC, "remove stale" needs a liveness probe first; only unlink after a failed connect proves the old endpoint is dead.
+
 ### For signal wiring, capture the registered handler instead of sending real signals in-process
 
 Task 7.5's first entry regression test sent a real `SIGTERM` to the Vitest process, which polluted sibling tests with extra output and made debugging harder. The better pattern is to intercept `process.once('SIGTERM', handler)` and invoke the captured handler directly. It still tests ordering but avoids cross-test process-wide side effects.
@@ -192,13 +198,13 @@ Reviewer's flag: this stub doesn't validate against `EventSchema`, so a writer-s
 
 ### oa-core test suite is fast
 
-372 tests in ~14 seconds (with builds). Each test file averages ~11 tests. The longest individual test runs are:
+376 tests in ~15 seconds (with builds). Each test file averages ~11 tests. The longest individual test runs are:
 
 - `ELOCKED` timeout test (~5s, by design — exercises proper-lockfile's full retry budget)
 - Cross-process contention tests (~1–1.5s, fork/spawn overhead)
 - `runPlan` integration tests (~1.5s each, real git repos in tmpdir)
 
-No flakes observed across the Phase 7 work once the child-import path in `pidfile.test.ts` moved off `process.cwd()`.
+No flakes observed across the Phase 7 work once the child-import path in `pidfile.test.ts` moved off `process.cwd()` and the control-socket live-path regression was pinned in `controlSocket.test.ts`.
 
 ### EventSchema validation cost
 
