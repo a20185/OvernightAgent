@@ -430,10 +430,13 @@ describe('runPlan integration (Task 7.3)', () => {
     expect(reread?.status).toBe('done');
   });
 
-  // (5) Signal abort mid-plan: 2 tasks, abort after task 1's first step lands.
-  // Plan ends 'stopped', task 2 never started. The abort hook in the worker
-  // adapter triggers right after the first step's commit, then the supervisor
-  // observes the aborted signal at the next task boundary.
+  // (5) Signal abort mid-plan: 2 tasks, abort while task 1 is mid-step.
+  // Plan ends 'stopped', task 2 never started. With the post-Task-7.3
+  // hardening (mid-attempt abort checks before verifyCmd / runReviewer), an
+  // abort that fires inside the worker's sideEffect is observed at the next
+  // gate boundary — task 1's step lands as 'blocked' under the markBlocked
+  // policy, the task aggregates to 'blocked-needs-human', and task 2 is
+  // skipped entirely at the next per-task abort check.
   it('signal abort mid-plan: task 2 never starts, plan ends stopped', async () => {
     const f1 = await makeTaskFixture(REPO, REVIEWER_PROMPT, { stepCount: 1 });
     const f2 = await makeTaskFixture(REPO, REVIEWER_PROMPT, { stepCount: 1 });
@@ -445,8 +448,9 @@ describe('runPlan integration (Task 7.3)', () => {
         stdoutBody: `task 1 step 1\n${OK_STATUS_BLOCK}\n`,
         sideEffect: async (cwd) => {
           await commitWork(cwd, 't1');
-          // Abort AFTER the first task's commit lands. The supervisor checks
-          // signal.aborted before starting each task, so task 2 will be skipped.
+          // Abort AFTER the first task's commit lands but BEFORE verifyCmd /
+          // reviewer get to run. The supervisor's mid-attempt abort guards
+          // short-circuit those gates.
           ac.abort();
         },
       },
@@ -467,14 +471,19 @@ describe('runPlan integration (Task 7.3)', () => {
 
     expect(r.outcome).toBe('stopped');
     expect(r.taskOutcomes).toHaveLength(1);
+    // Task 1's step is 'blocked' (mid-attempt abort under markBlocked), so
+    // its task aggregate is 'blocked-needs-human'.
     expect(r.taskOutcomes[0]).toEqual({
       taskId: f1.taskId,
-      outcome: 'done',
+      outcome: 'blocked-needs-human',
       stepsRun: 1,
     });
 
     // Worker called exactly once — only task 1's step. Task 2 never started.
     expect(worker.callCount()).toBe(1);
+    // Reviewer never called: the abort check before runReviewer (and before
+    // verifyCmd) short-circuits before we reach the reviewer.
+    expect(reviewer.callCount()).toBe(0);
 
     const events = await readEvents(sealed.id);
     const kinds = events.map((e) => e.kind);
@@ -485,9 +494,10 @@ describe('runPlan integration (Task 7.3)', () => {
     expect(last.kind).toBe('run.stop');
     expect(last.reason).toBe('user');
 
-    // Inbox: task 1 done, task 2 untouched (still 'queued' from seal).
+    // Inbox: task 1 ends blocked-needs-human, task 2 untouched (still
+    // 'queued' from seal — operator can resume).
     const t1 = await inbox.get(f1.taskId);
-    expect(t1?.status).toBe('done');
+    expect(t1?.status).toBe('blocked-needs-human');
     const t2 = await inbox.get(f2.taskId);
     expect(t2?.status).toBe('queued');
 

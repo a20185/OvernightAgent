@@ -190,6 +190,14 @@ async function runStep(
   while (attempt < maxLoops) {
     attempt += 1;
 
+    // Fail-fast on parent abort (e.g. daemon `oa stop`). Without this check we
+    // would otherwise pay for a fresh prompt-write + progress.mark + adapter
+    // spawn for an attempt that's about to be torn down anyway. The outer-loop
+    // already emits run.stop with reason='user' downstream.
+    if (parentSignal.aborted) {
+      break;
+    }
+
     // ADR-0003: rewind worktree to HEAD (== stepStartSha after a previous
     // attempt's commits got rewound) BEFORE attempts > 1. The first attempt
     // has nothing to rewind. We rewind to `stepStartSha` explicitly via
@@ -294,6 +302,28 @@ async function runStep(
     // supervisor's reaction is the same: short-circuit, mark step failed,
     // exit attempt loop. Distinct events surface the killer for post-mortem.
     if (workerResult.killedBy) {
+      // Emit the dedicated kill-cause event AS WELL as the unified tail-fail
+      // below. Reviewers/post-mortems that care about *why* the worker was
+      // killed (timeout vs stdout-cap) read these; verify-pipeline-aware
+      // consumers still get the gate result via the tail-fail emission.
+      if (workerResult.killedBy === 'timeout') {
+        await events.emit({
+          kind: 'step.timeout',
+          taskId,
+          stepN: step.n,
+          attempt,
+          durationMs:
+            workerResult.durationMs > 0 ? workerResult.durationMs : Date.now() - workerStart,
+        });
+      } else if (workerResult.killedBy === 'stdoutCap') {
+        await events.emit({
+          kind: 'step.stdoutCapHit',
+          taskId,
+          stepN: step.n,
+          attempt,
+          bytes: intake.strategy.stepStdoutCapBytes,
+        });
+      }
       await events.emit({
         kind: 'step.verify.tail.fail',
         taskId,
@@ -346,6 +376,15 @@ async function runStep(
     await events.emit({ kind: 'step.verify.commit.ok', taskId, stepN: step.n, attempt });
 
     // ---- Pre-merge gate 3: user verify command -----------------------------
+    // Abort check before verifyCmd: this gate spawns the user's verify script
+    // which can run for minutes (e.g. `pnpm test`). A pending parent abort
+    // would otherwise be observed only after the script finishes. Emit the
+    // attempt's terminal events so the events.jsonl stream stays consistent.
+    if (parentSignal.aborted) {
+      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'failed' });
+      stepOutcome = intake.strategy.onFailure === 'halt' ? 'failed' : 'blocked';
+      break;
+    }
     const verifyCmdString = step.verify ?? intake.verify.command;
     const cmdGate = await verifyGates.verifyCmd(worktreeInfo.absRoot, verifyCmdString);
     if (!cmdGate.ok) {
@@ -364,6 +403,16 @@ async function runStep(
     await events.emit({ kind: 'step.verify.cmd.ok', taskId, stepN: step.n, attempt });
 
     // ---- Pre-merge gate 4: reviewer ----------------------------------------
+    // Abort check before reviewer: the reviewer is the single most expensive
+    // call in the inner loop (LLM round-trip, often 30s+). Skip it if the
+    // parent already aborted. The stepAc.signal would tear down a spawned
+    // adapter mid-flight, but we'd still pay for the prompt assembly and any
+    // initial setup here — fail fast instead.
+    if (parentSignal.aborted) {
+      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'failed' });
+      stepOutcome = intake.strategy.onFailure === 'halt' ? 'failed' : 'blocked';
+      break;
+    }
     const g = simpleGit(worktreeInfo.absRoot);
     const stepDiff = await g.raw(['diff', `${stepStartSha}..HEAD`]);
 
@@ -411,12 +460,16 @@ async function runStep(
     if (attempt < maxLoops) {
       const fixCtx = synthesizeFixContext(reviewResult.blocking);
       prevIssues = fixCtx.openReviewIssues;
+      // Only emit step.fix.synthesized on the path that actually USES the
+      // synthesized fix context — i.e. there's at least one more attempt.
+      // Emitting it on the exhausted-final-attempt branch below would imply a
+      // fix is queued for the next attempt that will never happen.
       await events.emit({ kind: 'step.fix.synthesized', taskId, stepN: step.n, attempt });
       await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'failed' });
       // Loop continues.
     } else {
-      // Final attempt exhausted with blocking issues remaining.
-      await events.emit({ kind: 'step.fix.synthesized', taskId, stepN: step.n, attempt });
+      // Final attempt exhausted with blocking issues remaining. No fix is
+      // synthesized: the loop ends here.
       await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'blocked' });
       stepOutcome = 'blocked';
       break;
@@ -461,204 +514,249 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
   const eventsPath = opts.eventsPath ?? path.resolve(runDirAbs, 'events.jsonl');
   const events = await openEventWriter({ absPath: eventsPath, validate: false });
 
-  // (5) Emit run.start.
-  await events.emit({
-    kind: 'run.start',
-    planId: opts.planId,
-    hostInfo: {
-      pid: process.pid,
-      platform: process.platform,
-      arch: process.arch,
-      nodeVersion: process.version,
-    },
-  });
-
-  // (6) Wall-clock budget. v0 reads `overrides.planBudgetSec` (set by the
-  //     plan author at seal time) or falls back to 8h (the DEFAULT_CONFIG
-  //     value). Config-from-disk wiring lands in Task 7.7; injecting via
-  //     overrides keeps tests simple here.
-  const planBudgetSec =
-    typeof sealed.overrides.planBudgetSec === 'number' ? sealed.overrides.planBudgetSec : 28800;
-  const budgetDeadline = startedAt + planBudgetSec * 1000;
-  const isBudgetExhausted = (): boolean => Date.now() >= budgetDeadline;
-
-  // (7) Per-task outer loop.
+  // From here on, ANY throw must (a) emit run.error so events.jsonl is the
+  // authoritative crash record, (b) flip the plan to a terminal status so it
+  // doesn't get stuck at 'running', and (c) close the events writer so its
+  // fd doesn't leak (events.close() is idempotent, see writer.ts). The
+  // try/catch/finally below is the single chokepoint for those three.
+  let planTerminalSet = false;
+  let planOutcome: PlanOutcome = 'partial';
   const taskOutcomes: RunPlanResult['taskOutcomes'] = [];
-  let halted = false;
-  let abortedReason: 'user' | 'budget' | 'completed' = 'completed';
-
-  for (const taskId of sealed.taskListIds) {
-    // Budget check first: if exhausted, mark THIS and remaining tasks as
-    // budget-exhausted (no events emitted for them — the plan-level run.stop
-    // 'budget' reason carries the signal).
-    if (isBudgetExhausted()) {
-      taskOutcomes.push({ taskId, outcome: 'budget-exhausted', stepsRun: 0 });
-      await inbox.setStatus(taskId, 'budget-exhausted').catch(() => undefined);
-      abortedReason = 'budget';
-      halted = true;
-      continue;
-    }
-
-    // Signal-abort check: stop cleanly. Tasks not yet started leave their
-    // inbox status untouched (still 'queued') — the operator can resume.
-    if (opts.signal.aborted) {
-      abortedReason = 'user';
-      halted = true;
-      break;
-    }
-
-    const taskFolder = taskDir(taskId);
-    const intake = await loadIntake(taskFolder);
-    const stepsDoc = await loadSteps(taskFolder);
-
-    await inbox.setStatus(taskId, 'running');
-    await events.emit({ kind: 'task.start', taskId });
-
-    // Worktree.
-    const wt = await worktree.create({
-      taskId,
-      repoDir: intake.project.dir,
-      baseBranch: intake.project.baseBranch,
-      taskTitle: intake.title,
+  try {
+    // (5) Emit run.start.
+    await events.emit({
+      kind: 'run.start',
+      planId: opts.planId,
+      hostInfo: {
+        pid: process.pid,
+        platform: process.platform,
+        arch: process.arch,
+        nodeVersion: process.version,
+      },
     });
 
-    // Bootstrap. v0 onFailure semantics: bootstrap-failed = task fails. If
-    // intake.strategy.onFailure === 'halt', the plan halts after this task;
-    // any other policy continues to the next task.
-    if (intake.bootstrap.script.trim() !== '') {
-      const bs = await runBootstrap({
-        absWorktree: wt.absRoot,
-        script: intake.bootstrap.script,
-        timeoutSec: intake.bootstrap.timeoutSec,
-        eventWriter: events,
-        taskId,
-      });
-      if (!bs.ok) {
-        await inbox.setStatus(taskId, 'bootstrap-failed');
-        await events.emit({ kind: 'task.end', taskId, status: 'bootstrap-failed' });
-        taskOutcomes.push({ taskId, outcome: 'bootstrap-failed', stepsRun: 0 });
-        if (intake.strategy.onFailure === 'halt') {
-          halted = true;
-          break;
-        }
+    // (6) Wall-clock budget. v0 reads `overrides.planBudgetSec` (set by the
+    //     plan author at seal time) or falls back to 8h (the DEFAULT_CONFIG
+    //     value). Config-from-disk wiring lands in Task 7.7; injecting via
+    //     overrides keeps tests simple here.
+    const planBudgetSec =
+      typeof sealed.overrides.planBudgetSec === 'number' ? sealed.overrides.planBudgetSec : 28800;
+    const budgetDeadline = startedAt + planBudgetSec * 1000;
+    const isBudgetExhausted = (): boolean => Date.now() >= budgetDeadline;
+
+    // (7) Per-task outer loop.
+    let halted = false;
+    let abortedReason: 'user' | 'budget' | 'completed' = 'completed';
+
+    for (const taskId of sealed.taskListIds) {
+      // Budget check first: if exhausted, mark THIS and remaining tasks as
+      // budget-exhausted (no events emitted for them — the plan-level run.stop
+      // 'budget' reason carries the signal).
+      if (isBudgetExhausted()) {
+        taskOutcomes.push({ taskId, outcome: 'budget-exhausted', stepsRun: 0 });
+        // No `.catch(() => undefined)` here: a real disk failure during the
+        // budget-exhausted marking is a genuine problem the operator should
+        // see — let it propagate up to the run.error path.
+        await inbox.setStatus(taskId, 'budget-exhausted');
+        abortedReason = 'budget';
+        halted = true;
         continue;
       }
-    }
 
-    // Resolve adapters via the injected factories. Production wiring (Task
-    // 7.7) will route through `getAdapter(intake.executor.agent)`; the
-    // factory-injection seam keeps tests free of registry plumbing.
-    const workerAdapter = opts.workerAdapterFactory(intake.executor.agent);
-    const reviewerAdapter = opts.reviewerAdapterFactory(intake.reviewer.agent);
-
-    // Reviewer prompt path: intake.reviewer.promptPath or a default. The
-    // default is materialized as a tmp file so review.runReviewer can read
-    // it via fs.readFile (the contract requires an absolute path).
-    let reviewerPromptPath = intake.reviewer.promptPath;
-    let cleanupReviewerPrompt: (() => Promise<void>) | null = null;
-    if (reviewerPromptPath === null) {
-      const tmp = path.resolve(runDirAbs, 'reviewer-default-prompt.md');
-      await writeFileAtomic(
-        tmp,
-        'You are the reviewer. Examine the diff and emit findings as P0/P1/P2.\n',
-      );
-      reviewerPromptPath = tmp;
-      cleanupReviewerPrompt = async (): Promise<void> => {
-        await fs.unlink(tmp).catch(() => undefined);
-      };
-    }
-
-    // Per-step inner loop.
-    let stepsRun = 0;
-    const stepResults: StepRunResult[] = [];
-    let taskHaltedByStep = false;
-    for (const step of stepsDoc.steps) {
+      // Signal-abort check: stop cleanly. Tasks not yet started leave their
+      // inbox status untouched (still 'queued') — the operator can resume.
       if (opts.signal.aborted) {
         abortedReason = 'user';
         halted = true;
         break;
       }
-      if (isBudgetExhausted()) {
-        abortedReason = 'budget';
-        halted = true;
-        break;
-      }
-      const stepResult = await runStep(
+
+      const taskFolder = taskDir(taskId);
+      const intake = await loadIntake(taskFolder);
+      const stepsDoc = await loadSteps(taskFolder);
+
+      await inbox.setStatus(taskId, 'running');
+      await events.emit({ kind: 'task.start', taskId });
+
+      // Worktree.
+      const wt = await worktree.create({
         taskId,
-        step,
-        intake,
-        workerAdapter,
-        reviewerAdapter,
-        wt,
-        reviewerPromptPath,
-        runDirAbs,
-        taskFolder,
-        events,
-        opts.signal,
-      );
-      stepsRun += 1;
-      stepResults.push(stepResult);
-      if (stepResult.outcome === 'failed' && intake.strategy.onFailure === 'halt') {
-        taskHaltedByStep = true;
-        halted = true;
-        break;
+        repoDir: intake.project.dir,
+        baseBranch: intake.project.baseBranch,
+        taskTitle: intake.title,
+      });
+
+      // Bootstrap. v0 onFailure semantics: bootstrap-failed = task fails. If
+      // intake.strategy.onFailure === 'halt', the plan halts after this task;
+      // any other policy continues to the next task.
+      if (intake.bootstrap.script.trim() !== '') {
+        const bs = await runBootstrap({
+          absWorktree: wt.absRoot,
+          script: intake.bootstrap.script,
+          timeoutSec: intake.bootstrap.timeoutSec,
+          eventWriter: events,
+          taskId,
+        });
+        if (!bs.ok) {
+          await inbox.setStatus(taskId, 'bootstrap-failed');
+          await events.emit({ kind: 'task.end', taskId, status: 'bootstrap-failed' });
+          taskOutcomes.push({ taskId, outcome: 'bootstrap-failed', stepsRun: 0 });
+          if (intake.strategy.onFailure === 'halt') {
+            halted = true;
+            break;
+          }
+          continue;
+        }
       }
+
+      // Resolve adapters via the injected factories. Production wiring (Task
+      // 7.7) will route through `getAdapter(intake.executor.agent)`; the
+      // factory-injection seam keeps tests free of registry plumbing.
+      const workerAdapter = opts.workerAdapterFactory(intake.executor.agent);
+      const reviewerAdapter = opts.reviewerAdapterFactory(intake.reviewer.agent);
+
+      // Reviewer prompt path: intake.reviewer.promptPath or a default. The
+      // default is materialized as a tmp file so review.runReviewer can read
+      // it via fs.readFile (the contract requires an absolute path).
+      let reviewerPromptPath = intake.reviewer.promptPath;
+      let cleanupReviewerPrompt: (() => Promise<void>) | null = null;
+      if (reviewerPromptPath === null) {
+        const tmp = path.resolve(runDirAbs, 'reviewer-default-prompt.md');
+        await writeFileAtomic(
+          tmp,
+          'You are the reviewer. Examine the diff and emit findings as P0/P1/P2.\n',
+        );
+        reviewerPromptPath = tmp;
+        cleanupReviewerPrompt = async (): Promise<void> => {
+          await fs.unlink(tmp).catch(() => undefined);
+        };
+      }
+
+      // Per-step inner loop.
+      let stepsRun = 0;
+      const stepResults: StepRunResult[] = [];
+      let taskHaltedByStep = false;
+      // When a non-review gate fails under markBlocked policy, the worktree
+      // may carry uncommitted side-effects from the failed worker. Continuing
+      // to step N+1 against that dirty tree poisons the next step's verify
+      // diff and any rewindToHead it does on retry. Per the code-review
+      // remediation (option b), break out of the per-step loop on the first
+      // 'blocked' outcome and surface the task as blocked-needs-human — the
+      // remaining steps can't make progress without manual intervention.
+      let taskBlockedByStep = false;
+      for (const step of stepsDoc.steps) {
+        if (opts.signal.aborted) {
+          abortedReason = 'user';
+          halted = true;
+          break;
+        }
+        if (isBudgetExhausted()) {
+          abortedReason = 'budget';
+          halted = true;
+          break;
+        }
+        const stepResult = await runStep(
+          taskId,
+          step,
+          intake,
+          workerAdapter,
+          reviewerAdapter,
+          wt,
+          reviewerPromptPath,
+          runDirAbs,
+          taskFolder,
+          events,
+          opts.signal,
+        );
+        stepsRun += 1;
+        stepResults.push(stepResult);
+        if (stepResult.outcome === 'failed' && intake.strategy.onFailure === 'halt') {
+          taskHaltedByStep = true;
+          halted = true;
+          break;
+        }
+        if (stepResult.outcome === 'blocked') {
+          taskBlockedByStep = true;
+          break;
+        }
+      }
+
+      if (cleanupReviewerPrompt !== null) await cleanupReviewerPrompt();
+
+      // Aggregate task outcome from step outcomes:
+      //   any step 'failed' (with halt policy) → task 'failed', plan halts
+      //   any step 'blocked'                   → task 'blocked-needs-human'
+      //   any step 'failed' (non-halt policy)  → task 'blocked-needs-human'
+      //   all 'done'                           → task 'done'
+      let taskOutcome: TaskOutcome;
+      if (stepResults.some((r) => r.outcome === 'failed') && intake.strategy.onFailure === 'halt') {
+        taskOutcome = 'failed';
+      } else if (
+        stepResults.some((r) => r.outcome === 'blocked' || r.outcome === 'failed')
+      ) {
+        taskOutcome = 'blocked-needs-human';
+      } else {
+        taskOutcome = 'done';
+      }
+      const taskStatus: TaskStatusT =
+        taskOutcome === 'done'
+          ? 'done'
+          : taskOutcome === 'failed'
+            ? 'failed'
+            : 'blocked-needs-human';
+
+      await events.emit({ kind: 'task.end', taskId, status: taskStatus });
+      await inbox.setStatus(taskId, taskStatus);
+      taskOutcomes.push({ taskId, outcome: taskOutcome, stepsRun });
+
+      if (taskHaltedByStep) break;
+      // taskBlockedByStep does NOT halt the plan as a whole — onFailure
+      // policy at the *plan* level decides cross-task continuation. We only
+      // stop running THIS task's remaining steps. Continue to the next task.
+      void taskBlockedByStep;
+      if (halted) break;
     }
 
-    if (cleanupReviewerPrompt !== null) await cleanupReviewerPrompt();
+    // (8) run.stop. Reason precedence: budget > user > completed.
+    await events.emit({ kind: 'run.stop', reason: abortedReason });
 
-    // Aggregate task outcome from step outcomes:
-    //   any step 'failed' (with halt policy) → task 'failed', plan halts
-    //   any step 'blocked'                   → task 'blocked-needs-human'
-    //   any step 'failed' (non-halt policy)  → task 'blocked-needs-human'
-    //   all 'done'                           → task 'done'
-    let taskOutcome: TaskOutcome;
-    if (stepResults.some((r) => r.outcome === 'failed') && intake.strategy.onFailure === 'halt') {
-      taskOutcome = 'failed';
-    } else if (
-      stepResults.some((r) => r.outcome === 'blocked' || r.outcome === 'failed')
-    ) {
-      taskOutcome = 'blocked-needs-human';
-    } else {
-      taskOutcome = 'done';
-    }
-    const taskStatus: TaskStatusT =
-      taskOutcome === 'done'
+    // (9) Plan terminal status.
+    if (abortedReason === 'budget') planOutcome = 'budget-exhausted';
+    else if (abortedReason === 'user') planOutcome = 'stopped';
+    else if (taskOutcomes.every((t) => t.outcome === 'done')) planOutcome = 'done';
+    else planOutcome = 'partial';
+
+    const planStatusForStore =
+      planOutcome === 'done'
         ? 'done'
-        : taskOutcome === 'failed'
-          ? 'failed'
-          : 'blocked-needs-human';
-
-    await events.emit({ kind: 'task.end', taskId, status: taskStatus });
-    await inbox.setStatus(taskId, taskStatus);
-    taskOutcomes.push({ taskId, outcome: taskOutcome, stepsRun });
-
-    if (taskHaltedByStep) break;
-    if (halted) break;
+        : planOutcome === 'stopped'
+          ? 'stopped'
+          : 'partial'; // 'partial' covers both partial AND budget-exhausted in the store
+    await plan.setStatus(opts.planId, planStatusForStore);
+    planTerminalSet = true;
+  } catch (err) {
+    // Surface the crash through events.jsonl BEFORE re-throwing so the
+    // post-mortem renderer can attribute the failure. Use a best-effort
+    // emit: if the writer is in a bad state itself, swallow that secondary
+    // error so the original throw isn't shadowed.
+    const message = err instanceof Error ? err.message : String(err);
+    await events.emit({ kind: 'run.error', message }).catch(() => undefined);
+    throw err;
+  } finally {
+    // Always flip the plan to a terminal status, even on throw, so it isn't
+    // left at 'running' indefinitely. 'partial' is the right default for
+    // unexpected crashes — it tells the operator "I started, I didn't finish,
+    // you need to look".
+    if (!planTerminalSet) {
+      await plan.setStatus(opts.planId, 'partial').catch(() => undefined);
+    }
+    // events.close() is idempotent and swallows write-after-close errors that
+    // its own emit() would surface — see writer.ts. Always call it last so
+    // the fd is released regardless of which path we exit through.
+    await events.close();
   }
 
-  // (8) run.stop. Reason precedence: budget > user > completed.
-  await events.emit({ kind: 'run.stop', reason: abortedReason });
-
-  // (9) Plan terminal status.
-  let planOutcome: PlanOutcome;
-  if (abortedReason === 'budget') planOutcome = 'budget-exhausted';
-  else if (abortedReason === 'user') planOutcome = 'stopped';
-  else if (taskOutcomes.every((t) => t.outcome === 'done')) planOutcome = 'done';
-  else planOutcome = 'partial';
-
-  const planStatusForStore =
-    planOutcome === 'done'
-      ? 'done'
-      : planOutcome === 'stopped'
-        ? 'stopped'
-        : 'partial'; // 'partial' covers both partial AND budget-exhausted in the store
-  await plan.setStatus(opts.planId, planStatusForStore);
-
-  // (10) Close events writer.
-  await events.close();
-
-  // (11) Return.
+  // Return.
   return {
     planId: opts.planId,
     outcome: planOutcome,
