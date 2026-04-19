@@ -23,6 +23,9 @@ export * as inbox from './stores/inbox.js';
 export * as queue from './stores/queue.js';
 export * as plan from './stores/plan.js';
 export type { CreatePlanOpts } from './stores/plan.js';
+// Intake parser: pure-function front door for slash-command shims.
+export * as parseSteps from './intake/parseSteps.js';
+export type { ParsedStep, ParseResult } from './intake/parseSteps.js';
 export {
   ID_REGEX,
   IdSchema,
