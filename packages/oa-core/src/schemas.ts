@@ -523,6 +523,43 @@ export const EventSchema = z.discriminatedUnion('kind', [
 ]);
 
 // -----------------------------------------------------------------------------
+// ADR-0008 tail-message protocol. Two fenced-block payloads the agent / reviewer
+// emit at the end of stdout, parsed by `verify/tail.ts`:
+//
+//   - `oa-status` (executor) — `{status,summary,notes?}` reporting the outcome
+//     of the step. Drives the verifyTail gate (Task 6.2).
+//   - `oa-review` (reviewer) — `{issues:[{priority,file,line?,finding,suggestion?}]}`
+//     enumerating per-file findings. Drives the review gate (Task 6.3).
+//
+// Both schemas are `.strict()` so any extra key from a misbehaving agent fails
+// loudly rather than silently dropping data the supervisor would later need.
+// -----------------------------------------------------------------------------
+
+export const OaStatusSchema = z
+  .object({
+    status: z.enum(['done', 'blocked']),
+    summary: z.string(),
+    notes: z.string().optional(),
+  })
+  .strict();
+
+export const OaReviewIssueSchema = z
+  .object({
+    priority: ReviewPriority,
+    file: z.string(),
+    line: z.number().int().optional(),
+    finding: z.string(),
+    suggestion: z.string().optional(),
+  })
+  .strict();
+
+export const OaReviewSchema = z
+  .object({
+    issues: z.array(OaReviewIssueSchema),
+  })
+  .strict();
+
+// -----------------------------------------------------------------------------
 // Inferred TypeScript types. Re-exported through `index.ts`. Downstream
 // modules should prefer importing these over hand-rolling the same shape.
 // -----------------------------------------------------------------------------
@@ -540,3 +577,6 @@ export type Event = z.infer<typeof EventSchema>;
 export type TaskStatusT = z.infer<typeof TaskStatus>;
 export type PlanStatusT = z.infer<typeof PlanStatus>;
 export type StepStatusT = z.infer<typeof StepStatus>;
+export type OaStatus = z.infer<typeof OaStatusSchema>;
+export type OaReview = z.infer<typeof OaReviewSchema>;
+export type OaReviewIssue = z.infer<typeof OaReviewIssueSchema>;

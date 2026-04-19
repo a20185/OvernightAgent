@@ -65,6 +65,13 @@ export {
   CommitMode,
   OnFailure,
   ReviewPriority,
+  // ADR-0008 tail-message protocol payload schemas. Consumed by `parseTail`
+  // (Task 6.1) and re-exposed for the supervisor / fix-loop synthesizer
+  // (Tasks 6.2 / 6.3 / 6.6) which assert against `OaStatus`/`OaReview`
+  // shapes when composing follow-up prompts.
+  OaStatusSchema,
+  OaReviewSchema,
+  OaReviewIssueSchema,
 } from './schemas.js';
 export type {
   Config,
@@ -80,7 +87,15 @@ export type {
   TaskStatusT,
   PlanStatusT,
   StepStatusT,
+  OaStatus,
+  OaReview,
+  OaReviewIssue,
 } from './schemas.js';
+// Tail-message parser (ADR-0008, Task 6.1). Pure function: extract the LAST
+// fenced ```oa-status / ```oa-review block, JSON-parse, validate. Consumed by
+// the verifyTail gate (6.2) and the review gate (6.3).
+export { parseTail } from './verify/tail.js';
+export type { ParseTailResult } from './verify/tail.js';
 // AgentAdapter contract (ADR-0009). Types-only — adapter packages depend on
 // `oa-core`'s public surface and consume these without importing any runtime.
 export type { AgentAdapter, AgentId, AgentRunOpts, AgentRunResult } from './adapter/types.js';
