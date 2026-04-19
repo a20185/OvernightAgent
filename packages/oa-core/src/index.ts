@@ -30,6 +30,8 @@ export type { ParsedStep, ParseResult } from './intake/parseSteps.js';
 // `references.materializeReferences(...)` and types stay discoverable.
 export * as references from './intake/references.js';
 export type { ReferenceInput, MaterializedRef } from './intake/references.js';
+// HANDOFF.md generator: pure renderer consumed by Phase 4.4 (intakeSubmit).
+export * as handoff from './intake/handoff.js';
 export {
   ID_REGEX,
   IdSchema,
