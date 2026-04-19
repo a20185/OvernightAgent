@@ -3,17 +3,31 @@ import { pathToFileURL } from 'node:url';
 import { assertId } from '../ids.js';
 import { acquire, release } from './pidfile.js';
 import { runPlan } from './runPlan.js';
+import type { RunPlanOpts } from './runPlan.js';
+
+export interface RunSupervisorEntryOpts {
+  workerAdapterFactory?: RunPlanOpts['workerAdapterFactory'];
+  reviewerAdapterFactory?: RunPlanOpts['reviewerAdapterFactory'];
+}
 
 /**
- * Minimal supervisor daemon entry scaffold for Task 7.4.
+ * Supervisor daemon entrypoint.
  *
- * The real outer loop lands later; for now the entry only establishes the
- * daemon's runtime shape:
- *   - write `<runDir>/oa.pid` as soon as startup begins,
- *   - stay alive until SIGTERM/SIGINT,
- *   - exit cleanly when signalled.
+ * Startup order is intentionally strict:
+ *   1. install SIGTERM/SIGINT handlers,
+ *   2. acquire/publish the pidfile,
+ *   3. hand off to `runPlan(...)`, which now owns the control socket and live
+ *      supervisor loop,
+ *   4. always release the pidfile on the way out.
+ *
+ * Tests can inject adapter factories so the real entry path (pidfile +
+ * runPlan + control socket) can be exercised without depending on the dynamic
+ * adapter registry.
  */
-export async function runSupervisorEntry(planId: string): Promise<void> {
+export async function runSupervisorEntry(
+  planId: string,
+  opts: RunSupervisorEntryOpts = {},
+): Promise<void> {
   assertId(planId);
 
   const ac = new AbortController();
@@ -34,35 +48,48 @@ export async function runSupervisorEntry(planId: string): Promise<void> {
       }) + '\n',
     );
   };
-  process.once('SIGTERM', () => {
+  const onSigterm = (): void => {
     void stop('SIGTERM');
-  });
-  process.once('SIGINT', () => {
+  };
+  const onSigint = (): void => {
     void stop('SIGINT');
-  });
-
-  await acquire(planId);
-  ownsPidfile = true;
-
-  if (stopped) {
-    await release(planId);
-    return;
-  }
+  };
+  process.once('SIGTERM', onSigterm);
+  process.once('SIGINT', onSigint);
 
   try {
-    await runPlan({
-      planId,
-      signal: ac.signal,
-    });
-  } finally {
-    if (ownsPidfile) {
-      try {
-        await release(planId);
-      } catch {
-        /* ignore */
-      }
+    await acquire(planId);
+    ownsPidfile = true;
+
+    if (stopped) {
+      await release(planId);
+      return;
     }
-    void stopSignal;
+
+    try {
+      await runPlan({
+        planId,
+        signal: ac.signal,
+        ...(opts.workerAdapterFactory !== undefined
+          ? { workerAdapterFactory: opts.workerAdapterFactory }
+          : {}),
+        ...(opts.reviewerAdapterFactory !== undefined
+          ? { reviewerAdapterFactory: opts.reviewerAdapterFactory }
+          : {}),
+      });
+    } finally {
+      if (ownsPidfile) {
+        try {
+          await release(planId);
+        } catch {
+          /* ignore */
+        }
+      }
+      void stopSignal;
+    }
+  } finally {
+    process.removeListener('SIGTERM', onSigterm);
+    process.removeListener('SIGINT', onSigint);
   }
 }
 

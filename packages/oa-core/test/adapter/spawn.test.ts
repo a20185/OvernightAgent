@@ -185,6 +185,29 @@ describe('spawnHeadless', () => {
     expect(result.exitCode).toBeNull();
   });
 
+  it('kills the child and closes cleanly when onSpawned throws', async () => {
+    const { stdoutPath, stderrPath } = paths();
+    const ac = new AbortController();
+    const startedAt = Date.now();
+
+    await expect(
+      spawnHeadless({
+        command: process.execPath,
+        args: ['-e', 'setInterval(() => {}, 1000)'],
+        cwd: TMP,
+        timeoutSec: 30,
+        stdoutCapBytes: 1_000_000,
+        stdoutPath,
+        stderrPath,
+        signal: ac.signal,
+        onSpawned: () => {
+          throw new Error('boom from onSpawned');
+        },
+      }),
+    ).rejects.toThrow(/boom from onSpawned/);
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+  });
+
   it('rejects relative cwd / stdoutPath / stderrPath via assertAbs', async () => {
     const { stdoutPath, stderrPath } = paths();
     const ac = new AbortController();

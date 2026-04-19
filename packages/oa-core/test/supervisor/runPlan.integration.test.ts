@@ -70,7 +70,12 @@ function makeStubAdapter(scripts: MockScript[]): MockAdapter {
       const s = scripts[i] ?? scripts[scripts.length - 1] ?? {};
       if (s.waitForSignal) {
         await new Promise<void>((resolve) => {
-          opts.signal.addEventListener('abort', () => resolve(), { once: true });
+          const onAbort = (): void => resolve();
+          opts.signal.addEventListener('abort', onAbort, { once: true });
+          if (opts.signal.aborted) {
+            opts.signal.removeEventListener('abort', onAbort);
+            resolve();
+          }
         });
       }
       await fs.writeFile(opts.stdoutPath, s.stdoutBody ?? '', 'utf8');
@@ -203,7 +208,7 @@ async function waitForSocket(planId: string, timeoutMs = 5_000): Promise<string>
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
-      await fs.access(p);
+      await controlRequest(p, { schemaVersion: 1, type: 'status' });
       return p;
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 25));
@@ -507,11 +512,11 @@ describe('runPlan integration (Task 7.3)', () => {
 
     expect(r.outcome).toBe('stopped');
     expect(r.taskOutcomes).toHaveLength(1);
-    // Task 1's step is 'blocked' (mid-attempt abort under markBlocked), so
-    // its task aggregate is 'blocked-needs-human'.
+    // User aborts keep the in-flight step resumable, so the current task is
+    // surfaced as stopped rather than as a verify/reviewer failure.
     expect(r.taskOutcomes[0]).toEqual({
       taskId: f1.taskId,
-      outcome: 'blocked-needs-human',
+      outcome: 'stopped',
       stepsRun: 1,
     });
 
@@ -530,10 +535,10 @@ describe('runPlan integration (Task 7.3)', () => {
     expect(last.kind).toBe('run.stop');
     expect(last.reason).toBe('user');
 
-    // Inbox: task 1 ends blocked-needs-human, task 2 untouched (still
-    // 'queued' from seal — operator can resume).
+    // Inbox: task 1 is stopped/resumable, task 2 untouched (still 'queued'
+    // from seal — operator can resume).
     const t1 = await inbox.get(f1.taskId);
-    expect(t1?.status).toBe('blocked-needs-human');
+    expect(t1?.status).toBe('stopped');
     const t2 = await inbox.get(f2.taskId);
     expect(t2?.status).toBe('queued');
 
@@ -681,6 +686,72 @@ describe('runPlan integration (Task 7.3)', () => {
 
     const reread = await plan.get(sealed.id);
     expect(reread?.status).toBe('stopped');
+    const progressMd = await fs.readFile(path.resolve(f.taskFolder, 'PROGRESS.md'), 'utf8');
+    expect(progressMd).toMatch(/\| 1 \| pending \|/);
+  });
+
+  it('graceful stop during reviewer aborts the reviewer run and exits stopped', async () => {
+    const f = await makeTaskFixture(REPO, REVIEWER_PROMPT, { stepCount: 1 });
+    const sealed = await plan.create({ taskListIds: [f.taskId] });
+    let reviewerReleased: (() => void) | undefined;
+
+    const worker = makeStubAdapter([
+      {
+        stdoutBody: `done\n${OK_STATUS_BLOCK}\n`,
+        sideEffect: (cwd) => commitWork(cwd, 'reviewer-graceful-stop'),
+      },
+    ]);
+    const reviewer: MockAdapter = {
+      id: 'claude',
+      defaultModel: 'opus',
+      capabilities: () => ({ supportsSessionId: false, supportsStructuredOutput: false }),
+      async run(opts: AgentRunOpts): Promise<AgentRunResult> {
+        await new Promise<void>((resolve) => {
+          reviewerReleased = resolve;
+          opts.signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        await fs.writeFile(opts.stdoutPath, '', 'utf8');
+        await fs.writeFile(opts.stderrPath, '', 'utf8');
+        return {
+          exitCode: null,
+          durationMs: 1,
+          timedOut: false,
+          stdoutCapHit: false,
+          killedBy: 'signal',
+        };
+      },
+      callCount: () => 1,
+    };
+
+    const runPromise = runPlan({
+      planId: sealed.id,
+      signal: new AbortController().signal,
+      workerAdapterFactory: () => worker,
+      reviewerAdapterFactory: () => reviewer,
+    });
+
+    const sock = await waitForSocket(sealed.id);
+    const start = Date.now();
+    while (reviewerReleased === undefined && Date.now() - start < 5_000) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(reviewerReleased).toBeTypeOf('function');
+
+    const stopReply = await controlRequest(sock, { schemaVersion: 1, type: 'stop', now: false });
+    expect(stopReply).toMatchObject({
+      schemaVersion: 1,
+      type: 'stop.reply',
+      acknowledged: true,
+      mode: 'graceful',
+    });
+
+    const result = await runPromise;
+    expect(result.outcome).toBe('stopped');
+
+    const reread = await plan.get(sealed.id);
+    expect(reread?.status).toBe('stopped');
+    const progressMd = await fs.readFile(path.resolve(f.taskFolder, 'PROGRESS.md'), 'utf8');
+    expect(progressMd).toMatch(/\| 1 \| pending \|/);
   });
 
   it('force stop now kills the in-flight worker, marks the step pending, and exits', async () => {

@@ -190,8 +190,8 @@ export type { DetachAndRunOpts } from './supervisor/daemon.js';
 // planId, runs every task's bootstrap + steps in order, applies the per-step
 // inner loop (assemblePrompt → adapter.run → verify gates → reviewer → maybe
 // fix-loop), and surfaces per-task outcomes back to the caller. Aborts cleanly
-// on `signal` and budget exhaustion. v0 takes worker/reviewer adapters by
-// injection; Task 7.7 will route via the registry.
+// on `signal` and budget exhaustion. Production falls back to the adapter
+// registry; tests can still inject worker/reviewer factories.
 export { runPlan } from './supervisor/runPlan.js';
 export type {
   RunPlanOpts,

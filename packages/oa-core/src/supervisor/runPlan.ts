@@ -73,9 +73,10 @@ import type { AgentAdapter, AgentRunControl } from '../adapter/types.js';
  *     (success / timeout / non-zero exit). On any non-success the task is
  *     marked `bootstrap-failed` and per-task onFailure decides whether to halt
  *     the plan or continue.
- *   - **Adapter resolution via injection**. Per the brief, v0 takes
- *     `workerAdapterFactory(agentId)` / `reviewerAdapterFactory(agentId)`; the
- *     production registry wiring lands in Task 7.7.
+ *   - **Adapter resolution defaults to the registry, with test injection
+ *     preserved.** Production falls back to `getAdapter(...)`; tests can still
+ *     inject `workerAdapterFactory(agentId)` / `reviewerAdapterFactory(agentId)`
+ *     to stay hermetic.
  *
  * No background processes, no parallelism — sequential v0. Parallel mode lands
  * in Phase 8+ once the sequential outer loop has shipped and the per-task
@@ -355,8 +356,21 @@ async function runStep(
     // and keeps the parent's user-driven abort propagating cleanly.
     const stepAc = new AbortController();
     const onParentAbort = (): void => stepAc.abort();
+    const clearParentAbort = (): void => {
+      parentSignal.removeEventListener('abort', onParentAbort);
+    };
     parentSignal.addEventListener('abort', onParentAbort, { once: true });
     if (parentSignal.aborted) stepAc.abort();
+
+    // Abort check before worker spawn: a control-socket stop can land after
+    // prompt/materialization but before the adapter gets called. Do not invoke
+    // a fresh adapter run with an already-aborted signal.
+    if (parentSignal.aborted) {
+      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'pending' });
+      stepOutcome = 'pending';
+      clearParentAbort();
+      break;
+    }
 
     let workerResult;
     const workerStart = Date.now();
@@ -377,7 +391,6 @@ async function runStep(
       });
     } finally {
       runtime.activeSpawn = null;
-      parentSignal.removeEventListener('abort', onParentAbort);
     }
     await events.emit({
       kind: 'step.agent.exit',
@@ -395,9 +408,10 @@ async function runStep(
     // supervisor's reaction is the same: short-circuit, mark step failed,
     // exit attempt loop. Distinct events surface the killer for post-mortem.
     if (workerResult.killedBy) {
-      if (runtime.stopMode === 'force-now') {
+      if (workerResult.killedBy === 'signal' && parentSignal.aborted) {
         await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'pending' });
         stepOutcome = 'pending';
+        clearParentAbort();
         break;
       }
       // Emit the dedicated kill-cause event AS WELL as the unified tail-fail
@@ -434,6 +448,7 @@ async function runStep(
       // marked needs-human downstream; halt → 'failed' so the plan halts.
       stepOutcome =
         intake.strategy.onFailure === 'halt' ? 'failed' : 'blocked';
+      clearParentAbort();
       break;
     }
 
@@ -453,6 +468,7 @@ async function runStep(
       });
       await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'failed' });
       stepOutcome = intake.strategy.onFailure === 'halt' ? 'failed' : 'blocked';
+      clearParentAbort();
       break;
     }
     await events.emit({ kind: 'step.verify.tail.ok', taskId, stepN: step.n, attempt });
@@ -469,6 +485,7 @@ async function runStep(
       });
       await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'failed' });
       stepOutcome = intake.strategy.onFailure === 'halt' ? 'failed' : 'blocked';
+      clearParentAbort();
       break;
     }
     await events.emit({ kind: 'step.verify.commit.ok', taskId, stepN: step.n, attempt });
@@ -479,14 +496,9 @@ async function runStep(
     // would otherwise be observed only after the script finishes. Emit the
     // attempt's terminal events so the events.jsonl stream stays consistent.
     if (parentSignal.aborted) {
-      const interruptedStatus = runtime.stopMode === 'force-now' ? 'pending' : 'failed';
-      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: interruptedStatus });
-      stepOutcome =
-        runtime.stopMode === 'force-now'
-          ? 'pending'
-          : intake.strategy.onFailure === 'halt'
-            ? 'failed'
-            : 'blocked';
+      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'pending' });
+      stepOutcome = 'pending';
+      clearParentAbort();
       break;
     }
     const verifyCmdString = step.verify ?? intake.verify.command;
@@ -502,6 +514,7 @@ async function runStep(
       });
       await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'failed' });
       stepOutcome = intake.strategy.onFailure === 'halt' ? 'failed' : 'blocked';
+      clearParentAbort();
       break;
     }
     await events.emit({ kind: 'step.verify.cmd.ok', taskId, stepN: step.n, attempt });
@@ -513,14 +526,9 @@ async function runStep(
     // adapter mid-flight, but we'd still pay for the prompt assembly and any
     // initial setup here — fail fast instead.
     if (parentSignal.aborted) {
-      const interruptedStatus = runtime.stopMode === 'force-now' ? 'pending' : 'failed';
-      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: interruptedStatus });
-      stepOutcome =
-        runtime.stopMode === 'force-now'
-          ? 'pending'
-          : intake.strategy.onFailure === 'halt'
-            ? 'failed'
-            : 'blocked';
+      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'pending' });
+      stepOutcome = 'pending';
+      clearParentAbort();
       break;
     }
     const g = simpleGit(worktreeInfo.absRoot);
@@ -549,7 +557,6 @@ async function runStep(
       runtime.activeSpawn = null;
     }
     if (
-      runtime.stopMode === 'force-now' &&
       typeof reviewResult.detail === 'object' &&
       reviewResult.detail !== null &&
       'killedBy' in reviewResult.detail &&
@@ -557,6 +564,7 @@ async function runStep(
     ) {
       await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'pending' });
       stepOutcome = 'pending';
+      clearParentAbort();
       break;
     }
     lastReviewIssues = reviewResult.issues;
@@ -569,6 +577,7 @@ async function runStep(
       const status = parseTail(stdoutContent, 'oa-status');
       if (status.ok) await findings.append(taskFolder, status.value.summary);
       stepOutcome = 'done';
+      clearParentAbort();
       break;
     }
 
@@ -595,12 +604,14 @@ async function runStep(
       // fix is queued for the next attempt that will never happen.
       await events.emit({ kind: 'step.fix.synthesized', taskId, stepN: step.n, attempt });
       await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'failed' });
+      clearParentAbort();
       // Loop continues.
     } else {
       // Final attempt exhausted with blocking issues remaining. No fix is
       // synthesized: the loop ends here.
       await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'blocked' });
       stepOutcome = 'blocked';
+      clearParentAbort();
       break;
     }
   }
@@ -710,8 +721,9 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
 
     // (6) Wall-clock budget. v0 reads `overrides.planBudgetSec` (set by the
     //     plan author at seal time) or falls back to 8h (the DEFAULT_CONFIG
-    //     value). Config-from-disk wiring lands in Task 7.7; injecting via
-    //     overrides keeps tests simple here.
+    //     value). The supervisor still consumes the sealed plan's overrides
+    //     directly here; that keeps tests simple and matches the current
+    //     runtime contract.
     const planBudgetSec =
       typeof sealed.overrides.planBudgetSec === 'number' ? sealed.overrides.planBudgetSec : 28800;
     const budgetDeadline = startedAt + planBudgetSec * 1000;

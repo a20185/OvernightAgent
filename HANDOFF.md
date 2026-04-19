@@ -1,9 +1,9 @@
 # OvernightAgent — Session Handoff
 
-**Prior checkpoint commit:** `18cec8b` (Task 7.5 — pidfile lifecycle)
+**Prior checkpoint commit:** `4160ee8` (Task 7.7 — supervisor responds to control socket)
 **Branch:** `dev` (cut from `master`; design docs are on `master`)
-**Latest completed task:** 7.6 — control socket
-**Verification:** `pnpm -r build` + `pnpm -r test` green — 387 passing across 5 packages (oa-core 376 + oa-adapter-claude 6 + oa-cli 3 + 2 adapter smoke tests)
+**Latest completed task:** 7.7 — wire control socket into supervisor
+**Verification:** `pnpm -r build` + `pnpm -r test` green — 396 passing across 5 packages (oa-core 385 + oa-adapter-claude 6 + oa-cli 3 + 2 adapter smoke tests)
 
 ---
 
@@ -17,7 +17,7 @@ Implementation is being executed via the `superpowers:subagent-driven-developmen
 
 ## Where we are
 
-**36 of 64 sub-tasks complete (~56%).** Phases 0–6 are fully done; Phase 7 is at 6/8.
+**37 of 64 sub-tasks complete (~58%).** Phases 0–6 are fully done; Phase 7 is at 7/8.
 
 | Phase | Subject | Status |
 |---|---|---|
@@ -28,7 +28,7 @@ Implementation is being executed via the `superpowers:subagent-driven-developmen
 | 4 | Intake parser, materializer, references, intakeSubmit | ✅ 4/4 |
 | 5 | AgentAdapter interface + claude adapter + registry | ✅ 4/4 |
 | 6 | Context injector, verify pipeline, fix loop | ✅ 7/7 |
-| **7** | **Supervisor, daemon, control socket, resume** | **6/8** (events writer, bootstrap, runPlan, daemonization, pidfile lifecycle, control socket done) |
+| **7** | **Supervisor, daemon, control socket, resume** | **7/8** (events writer, bootstrap, runPlan, daemonization, pidfile lifecycle, control socket, supervisor socket wiring done) |
 | 8 | oa-cli surface | pending |
 | 9 | SUMMARY.md renderer | pending |
 | 10 | codex + opencode adapters | pending |
@@ -46,14 +46,17 @@ Specs live in `docs/plans/2026-04-18-overnight-agent-taskmanager-implementation.
 Recent Phase 7 landings:
 - `packages/oa-core/src/supervisor/daemon.ts` — detached launcher with entry-path preflight, separate append-mode stdio fds, `child.unref()`, and explicit launcher-exit seam
 - `packages/oa-core/src/supervisor/pidfile.ts` — `proper-lockfile`-guarded `acquire/release/isStale` helper; stale cleanup and atomic rewrite happen inside the critical section
-- `packages/oa-core/src/supervisor/entry.ts` — child entry now routes through the helper, emits JSONL-safe `run.error`/`daemon.signal` output, and only releases after ownership is established
+- `packages/oa-core/src/supervisor/entry.ts` — child entry now routes through the helper, emits JSONL-safe `run.error`/`daemon.signal` output, only releases after ownership is established, forwards test adapter injection into `runPlan`, and removes process signal handlers on normal exit
 - `packages/oa-core/src/supervisor/controlSocket.ts` — length-prefixed JSON request/reply over AF_UNIX with `schemaVersion: 1`, safe stale-socket cleanup, and explicit rejection of live-socket path takeover
+- `packages/oa-core/src/supervisor/runPlan.ts` — opens the control socket on startup, serves live `status`, maps graceful/force stop to the active adapter spawn, treats user aborts as resumable `pending`, and resolves worker/reviewer adapters from the registry by default
+- `packages/oa-core/src/adapter/spawn.ts` — live-control handoff now happens after abort-listener wiring, and a throwing `onSpawned` callback tears the child down before rethrowing
 - `packages/oa-core/test/supervisor/daemon.integration.test.ts` — real-entry integration coverage for missing-entry fast-fail, launcher exit, pidfile creation, liveness, signal handling, JSON event emission, and cleanup
 - `packages/oa-core/test/supervisor/{pidfile,entry,controlSocket}.test.ts` — pidfile contention, startup-signal ordering, and real socket round-trip/regression coverage
+- `packages/oa-core/test/supervisor/{runPlan,entry}.integration.test.ts` — live status/stop coverage for worker and reviewer phases, pending-step resume semantics, and regression coverage that supervisor-entry signal handlers do not leak across in-process runs
 
-1. **Task 7.7 — Wire control socket into supervisor.** Open the socket on supervisor startup. On `stop {now:false}` raise the abort signal. On `stop {now:true}` SIGTERM the in-flight adapter spawn directly. On `status` return live state struct.
-2. **Task 7.8 — Resume protocol** (per ADR-0003). Detect stale pidfile + plan status `running` with no live daemon. For each task whose state is `running` (or any of its steps is `running`), call `worktree.rewindToHead`. Mark in-flight steps back to `pending`. Emit `run.resume {rewoundSteps}`. Re-enter the outer loop at the first non-`done` task.
-3. **Phase 8 kickoff — CLI surface.** Once Phase 7 closes, land `oa run/status/stop/tail` first so the new daemon control path is operator-visible before the rest of the CLI fills in.
+1. **Task 7.8 — Resume protocol** (per ADR-0003). Detect stale pidfile + plan status `running` with no live daemon. For each task whose state is `running` (or any of its steps is `running`), call `worktree.rewindToHead`. Mark in-flight steps back to `pending`. Emit `run.resume {rewoundSteps}`. Re-enter the outer loop at the first non-`done` task.
+2. **Phase 8 kickoff — CLI surface.** Once Phase 7 closes, land `oa run/status/stop/tail` first so the new daemon control path is operator-visible before the rest of the CLI fills in.
+3. **Phase 8 follow-on — operator commands.** After the control-path commands, fill in `oa intake/queue/plan/rerun/archive` so the daemon lifecycle has a usable end-to-end operator surface.
 
 After Phase 7 closes, Phase 8 (CLI surface — 10 sub-tasks for `oa intake/queue/plan/run/status/stop/tail/rerun/archive`) is next.
 
@@ -64,15 +67,15 @@ After Phase 7 closes, Phase 8 (CLI surface — 10 sub-tasks for `oa intake/queue
 ```sh
 cd /Users/souler/Nextcloud/test/OvernightAgent
 git status                           # should be clean on `dev`
-git log --oneline -5                 # confirm tip is the Task 7.6 checkpoint/fix-up commit
+git log --oneline -5                 # confirm tip includes the Task 7.7 landing + fix-up
 pnpm install                         # idempotent
-pnpm -r build && pnpm -r test        # all 5 packages, 387 tests, all green
+pnpm -r build && pnpm -r test        # all 5 packages, 396 tests, all green
 ```
 
 Then continue the workflow:
 1. Re-enter the `superpowers:subagent-driven-development` skill (or just dispatch implementer subagents directly with the per-task spec).
-2. Next task is **Task 7.7 (Wire control socket into supervisor)**.
-3. The Phase 7 task description (in the task tracker) carries 10 carry-forwards from prior reviews — re-read those before dispatching to keep the contract intact.
+2. Next task is **Task 7.8 (Resume protocol)**.
+3. The Phase 7 task description (in the task tracker) still carries 10 carry-forwards from prior reviews — re-read those before dispatching to keep the resume contract intact.
 
 ---
 
@@ -93,7 +96,7 @@ Then continue the workflow:
 - `packages/oa-core/src/verify/{tail,gates,review,context,fixLoop}.ts` — verify pipeline
 - `packages/oa-core/src/state/{progress,findings}.ts` — per-task state mutators
 - `packages/oa-core/src/events/writer.ts` — events.jsonl writer (chained-promise FIFO for in-process ordering)
-- `packages/oa-core/src/supervisor/{bootstrap,runPlan,daemon,pidfile,entry,controlSocket}.ts` — supervisor runtime pieces (runPlan + detached launcher/entry + pidfile lifecycle + standalone control socket done; socket wiring/resume next)
+- `packages/oa-core/src/supervisor/{bootstrap,runPlan,daemon,pidfile,entry,controlSocket}.ts` — supervisor runtime pieces (runPlan + detached launcher/entry + pidfile lifecycle + control socket wiring done; resume next)
 
 **Adapters:**
 - `packages/oa-adapter-claude/src/index.ts` — `adapter: AgentAdapter` for claude (headless via `claude -p`)
@@ -110,7 +113,7 @@ Then continue the workflow:
 
 ## Hard rules to keep honoring
 
-These are non-negotiable conventions established and verified through the Task 7.6 checkpoint:
+These are non-negotiable conventions established and re-verified through the Task 7.7 fix-up:
 
 1. **Absolute paths everywhere in worktree-touching code.** Every public API asserts via `assertAbs(p)` at the boundary. ESLint override on `**/worktree*.ts` + `**/paths*.ts` bans bare `path.join` (must use `path.resolve` or `path.resolve(path.join(...))`). See ADR-0002 + ADR-0013.
 2. **Atomic JSON writes only.** All on-disk mutations use `writeJsonAtomic` (temp + rename). Schema-versioned, atomic visibility, last-writer-wins on concurrent writes.
@@ -124,13 +127,13 @@ These are non-negotiable conventions established and verified through the Task 7
 
 ## Git tip + branch state
 
-- `dev` is ahead of `master` by 59 commits. `master` has 2 commits (the design + ADR docs).
+- `dev` is ahead of `master` by 61 commits once the Task 7.7 fix-up commit lands. `master` has 2 commits (the design + ADR docs).
 - No remote configured. All work is local.
-- Working tree should be clean after the Task 7.6 checkpoint/fix-up commit lands.
+- Working tree should be clean after the Task 7.7 fix-up commit lands.
 - Latest checkpoint commit message:
 
 ```
-fix(core): preserve live control socket
+fix(core): clean up supervisor entry signal handlers
 ```
 
 ---

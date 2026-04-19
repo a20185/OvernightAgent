@@ -67,6 +67,7 @@ The two-stage review (spec compliance → code quality) found bugs the implement
 - **Task 2.4** (worktree.commitsSince): same NaN concern; same guard added.
 - **Task 7.5** (pidfile lifecycle): the first helper version used a check-then-overwrite write path, which let two contenders both “succeed” under contention. Review forced the live/stale check and rewrite into a single `proper-lockfile` critical section. A second review also caught the startup-signal bug where `runSupervisorEntry` could release another daemon's pidfile before ownership was established; fixed with an `ownsPidfile` gate plus a focused entry regression test.
 - **Task 7.6** (control socket): the first `serve()` implementation unlinked any pre-existing socket path before bind. That satisfied the stale-socket test but let a second live server steal the pathname from the first daemon, breaking future clients without ever surfacing `EADDRINUSE`. Fix: probe the existing socket path first, only unlink on connect-failure (`ECONNREFUSED` / `ENOTSOCK` / `ENOENT`), and pin the behavior with a live-socket regression test.
+- **Task 7.7** (supervisor entry wiring): `runSupervisorEntry()` installed `process.once('SIGTERM'/'SIGINT')` handlers but did not remove them on a normal return. Repeated in-process entry runs could leak one-shot signal handlers until some later unrelated signal fired, producing stray `daemon.signal` output and risking cross-test interference. Fix: retain handler refs, remove them in an outer `finally`, and pin listener-count restoration in `entry.integration.test.ts`.
 
 ### Real schema/contract drift
 
@@ -178,6 +179,8 @@ Task 7.6 exposed an easy Unix-socket footgun: blindly unlinking an existing sock
 ### For signal wiring, capture the registered handler instead of sending real signals in-process
 
 Task 7.5's first entry regression test sent a real `SIGTERM` to the Vitest process, which polluted sibling tests with extra output and made debugging harder. The better pattern is to intercept `process.once('SIGTERM', handler)` and invoke the captured handler directly. It still tests ordering but avoids cross-test process-wide side effects.
+
+Related follow-on from Task 7.7: if production code installs process-level signal handlers during a testable helper like `runSupervisorEntry()`, it also needs an explicit cleanup path for the no-signal case. `process.once(...)` only self-removes when the signal actually fires; it does NOT clean itself up when the function returns normally.
 
 ### Stub event writer pattern for tests
 

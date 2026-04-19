@@ -1,8 +1,8 @@
 # OvernightAgent — Implementation Progress
 
-**Snapshot at:** Task 7.6 checkpoint on `dev`
-**Total commits on dev:** 61 after the Task 7.6 checkpoint (2 design + 59 implementation/checkpoint)
-**Workspace tests:** 387 passing (oa-core 376, oa-adapter-claude 6, oa-cli 3, 2 adapter smoke)
+**Snapshot at:** Task 7.7 fix-up workspace on `dev`
+**Total commits on dev:** 63 after the Task 7.7 fix-up (2 design + 61 implementation/checkpoint)
+**Workspace tests:** 396 passing (oa-core 385, oa-adapter-claude 6, oa-cli 3, 2 adapter smoke)
 
 ---
 
@@ -17,7 +17,7 @@
 | 4 | Intake pipeline | ✅ done | 4 sub-tasks (with fix-loop on 4.3) | parseSteps/references/handoff/submit |
 | 5 | AgentAdapter + claude | ✅ done | 4 sub-tasks (clean) | types/spawnHeadless/claude/registry |
 | 6 | Verify pipeline + fix loop | ✅ done | 7 sub-tasks (with small fix-up on 6.5 schemas) | tail/gates/reviewer/context/state/fixLoop + integration test |
-| **7** | **Supervisor / daemon / socket / resume** | **6/8** | runPlan + daemonization + pidfile lifecycle + control socket done | Socket wiring and resume still pending |
+| **7** | **Supervisor / daemon / socket / resume** | **7/8** | runPlan + daemonization + pidfile lifecycle + control socket wiring done | Resume protocol still pending |
 | 8 | oa-cli surface | ⬜ pending | 10 sub-tasks queued | Each command wraps oa-core APIs |
 | 9 | SUMMARY.md renderer | ⬜ pending | 3 sub-tasks queued | events reader + renderer + auto-render hook |
 | 10 | codex + opencode adapters | ⬜ pending | 3 sub-tasks queued | Mirror oa-adapter-claude shape |
@@ -35,13 +35,13 @@
 | 7.3 | Supervisor outer loop | ✅ | `0ea961e` + fix-up `200829b` | 668 LOC source + 550 LOC tests + 6 integration scenarios. Fix-up addressed 8 Important review items (try/finally, abort checks, blocked-step exit, run.error emission, dedicated step.timeout/stdoutCapHit events, etc.) |
 | 7.4 | Daemonization | ✅ | `4be272f` | `detachAndRun` + child entry scaffold + integration coverage; review fix-ups caught fd-shape drift, JSONL corruption risk, startup signal race, false-success missing-entry path, and launcher-exit test gap |
 | 7.5 | Pidfile lifecycle | ✅ | `18cec8b` | `proper-lockfile`-guarded `acquire/release/isStale`, entry wired through helper, startup-ownership regression test, and true cross-process contention coverage |
-| 7.6 | Control socket | ✅ | `2b8d50d` + `fix(core): preserve live control socket` (current tip) | Standalone AF_UNIX request/reply helper with `schemaVersion: 1`, stale-socket cleanup, server-close unlink, and regression coverage that a second `serve()` cannot steal a live socket path |
-| 7.7 | Wire socket into supervisor | ⬜ | — | `stop {now:false}` → graceful abort; `stop {now:true}` → SIGTERM agent; `status` → live state |
+| 7.6 | Control socket | ✅ | `2b8d50d` + `fix(core): preserve live control socket` | Standalone AF_UNIX request/reply helper with `schemaVersion: 1`, stale-socket cleanup, server-close unlink, and regression coverage that a second `serve()` cannot steal a live socket path |
+| 7.7 | Wire socket into supervisor | ✅ | `4160ee8` + `fix(core): clean up supervisor entry signal handlers` | `runPlan` owns the control socket, `status` reports live state, graceful/force stop map to resumable `pending`, registry fallback is active, and the entry path now cleans up injected signal handlers |
 | 7.8 | Resume protocol | ⬜ | — | Detect stale pidfile, rewindToHead in-flight worktrees, mark steps pending, re-enter outer loop |
 
 ---
 
-## Carry-forwards into Phase 7.6-7.8
+## Carry-forwards into Phase 7.8
 
 Captured on Task #15 (Phase 7) description in the tracker. Pasted here for reference:
 
@@ -61,7 +61,7 @@ Captured on Task #15 (Phase 7) description in the tracker. Pasted here for refer
 
 (h) Plan partial-failure recovery scan (orphan queued tasks not in any plan).
 
-(i) Phase 6 inner-loop reference at `test/innerLoop.integration.test.ts` shows the v0 loop shape — supervisor must add: rewindToHead between attempts (ADR-0003), one AbortSignal per step/task for control-socket cancel, per-attempt issue history (not just last) in events log, tail-fail short-circuits before reviewer (intentional — comment), stepStartSha policy (one captured at step start; persists across fix-loop attempts). **PARTIALLY APPLIED IN 7.3** — 7.3's hardening fix-up addressed several of these; the rest land in 7.7-7.8.
+(i) Phase 6 inner-loop reference at `test/innerLoop.integration.test.ts` shows the v0 loop shape — supervisor must add: rewindToHead between attempts (ADR-0003), one AbortSignal per step/task for control-socket cancel, per-attempt issue history (not just last) in events log, tail-fail short-circuits before reviewer (intentional — comment), stepStartSha policy (one captured at step start; persists across fix-loop attempts). **MOSTLY APPLIED** — Task 7.7 closed the control-socket cancel/live-state parts; the rewind/resume portion lands in 7.8.
 
 (j) Default reviewer prompt path collision under future parallel mode (Phase 8+): currently materialized at `<runDir>/reviewer-default-prompt.md` which would race between concurrent tasks. Add per-task suffix when parallel lands.
 
@@ -115,12 +115,12 @@ Suggestions level (from the Task 7.3 code-quality review):
 
 | Package | Files | Tests |
 |---|---|---|
-| oa-core | 34 | 376 |
+| oa-core | 36 | 385 |
 | oa-adapter-claude | 2 | 6 |
 | oa-adapter-codex | 1 | 1 (smoke) |
 | oa-adapter-opencode | 1 | 1 (smoke) |
 | oa-cli | 2 | 3 |
-| **Total** | **40** | **387** |
+| **Total** | **42** | **396** |
 
 ---
 

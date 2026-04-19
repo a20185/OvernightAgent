@@ -109,10 +109,6 @@ export async function spawnHeadless(opts: SpawnOpts): Promise<AgentRunResult> {
     }, SIGKILL_GRACE_MS).unref();
   };
 
-  opts.onSpawned?.({
-    killNow: () => kill('signal'),
-  });
-
   subprocess.stdout?.on('data', (chunk: Buffer) => {
     // Sync write keeps capture-file ordering deterministic and avoids the
     // ordering hazards of interleaved async writes when the cap is hit
@@ -145,24 +141,36 @@ export async function spawnHeadless(opts: SpawnOpts): Promise<AgentRunResult> {
   timeoutHandle.unref();
 
   const onAbort = (): void => kill('signal');
+  opts.signal.addEventListener('abort', onAbort, { once: true });
   if (opts.signal.aborted) {
-    // Signal already aborted before we could attach the listener — handle it
-    // synchronously so we don't spawn-then-wait-forever in the degenerate case.
+    // Add-then-check closes the race where the signal flips between a
+    // pre-check and listener registration.
+    opts.signal.removeEventListener('abort', onAbort);
     kill('signal');
-  } else {
-    opts.signal.addEventListener('abort', onAbort, { once: true });
   }
 
   let naturalExitCode: number | null = null;
+  let onSpawnedError: unknown;
   try {
+    try {
+      opts.onSpawned?.({
+        killNow: () => kill('signal'),
+      });
+    } catch (err) {
+      // If the caller rejects the live-control handoff, tear the child down
+      // before rethrowing so we don't leave an orphan behind.
+      onSpawnedError = err;
+      kill('signal');
+      await subprocess.catch(() => undefined);
+    }
+    if (onSpawnedError !== undefined) throw onSpawnedError;
+
     // `reject: false` means execa resolves on every termination path (natural
-    // exit, signal, timeout) — we never enter the catch under normal
-    // operation. The catch is here purely for execa internal errors (e.g.
-    // ENOENT on `command`).
+    // exit, signal, timeout). If execa still throws here, that's an actual
+    // launch/runtime failure (for example ENOENT on `command`) and should
+    // propagate to the caller.
     const result = await subprocess;
     naturalExitCode = result.exitCode ?? null;
-  } catch (err) {
-    naturalExitCode = (err as { exitCode?: number | null }).exitCode ?? null;
   } finally {
     clearTimeout(timeoutHandle);
     opts.signal.removeEventListener('abort', onAbort);
