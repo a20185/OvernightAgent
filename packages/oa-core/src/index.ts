@@ -104,6 +104,14 @@ export type { ParseTailResult } from './verify/tail.js';
 // `verifyCommit`, `verifyCmd`) free should we later add adjacent helpers.
 export * as verifyGates from './verify/gates.js';
 export type { GateOk, GateFail, GateResult } from './verify/gates.js';
+// Reviewer invocation + AI-judge review gate (Task 6.3). Composes the full
+// reviewer prompt (template + diff + oa-review protocol block), runs the
+// configured reviewer adapter, parses the `oa-review` tail block via
+// `parseTail`, and decides ok iff no parsed issue's priority is in the
+// supervisor's `blockOn` list. Namespaced (`review.runReviewer`) to keep the
+// surface tidy as Phase 6.5/6.6 add adjacent gate helpers.
+export * as review from './verify/review.js';
+export type { RunReviewerOpts, RunReviewerResult } from './verify/review.js';
 // AgentAdapter contract (ADR-0009). Types-only — adapter packages depend on
 // `oa-core`'s public surface and consume these without importing any runtime.
 export type { AgentAdapter, AgentId, AgentRunOpts, AgentRunResult } from './adapter/types.js';
