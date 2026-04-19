@@ -96,6 +96,14 @@ export type {
 // the verifyTail gate (6.2) and the review gate (6.3).
 export { parseTail } from './verify/tail.js';
 export type { ParseTailResult } from './verify/tail.js';
+// Verify gates (Task 6.2). Three pre-merge gates the Phase 7 supervisor
+// consults after every step run: tail-message protocol, commit-since-start,
+// and user-supplied verify command. All three return the same tagged
+// GateResult shape so the supervisor can shovel `eventKind` into the run log
+// without per-gate branching. Namespaced to keep the bare names (`verifyTail`,
+// `verifyCommit`, `verifyCmd`) free should we later add adjacent helpers.
+export * as verifyGates from './verify/gates.js';
+export type { GateOk, GateFail, GateResult } from './verify/gates.js';
 // AgentAdapter contract (ADR-0009). Types-only — adapter packages depend on
 // `oa-core`'s public surface and consume these without importing any runtime.
 export type { AgentAdapter, AgentId, AgentRunOpts, AgentRunResult } from './adapter/types.js';
