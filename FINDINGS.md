@@ -1,6 +1,6 @@
 # OvernightAgent — Implementation Findings
 
-Lessons, gotchas, and design refinements discovered during the 34 tasks completed so far. Useful when resuming or making analogous decisions in remaining tasks.
+Lessons, gotchas, and design refinements discovered during the 35 tasks completed so far. Useful when resuming or making analogous decisions in remaining tasks.
 
 ---
 
@@ -14,6 +14,7 @@ Every task in this codebase had failing-test-then-passing-test evidence in the i
 - Task 6.5 (progress mutators): mtime-equality test alone wouldn't catch a regression that swapped `writeJsonAtomic` for an in-place rewrite. Inode-equality assertion added.
 - Task 7.1 (events writer): naive `appendFile` per emit failed the 50-concurrent-emit ordering test. Chained-promise FIFO fix.
 - Task 7.3 (supervisor): drop a junk file between attempts inside the worker callback, probe for it on attempt 2 — proves the rewind happens via the production code path, not synthetic.
+- Task 7.5 (pidfile lifecycle): the initial in-process race test was too weak; replacing it with two real Node children importing the built `dist` helper exposed path-resolution mistakes in the harness and ultimately pinned the true single-winner guarantee.
 
 ### File-path-wrapped errors
 
@@ -59,10 +60,11 @@ The two-stage review (spec compliance → code quality) found bugs the implement
 ### Important-severity finds
 
 - **Task 0.2** (ESLint config): `no-restricted-imports` with `importNames: ['join']` flags namespace imports too (`import * as path from 'node:path'`), which is the very pattern ADR-0013 recommends. Fix: replace with `no-restricted-syntax` selector matching only the destructured-import shape.
-- **Task 0.4** (oa-cli): The `pretest` hook runs `tsc` but with `composite: true` + persistent `tsconfig.tsbuildinfo`, removing only `dist/` causes tsc to no-op. Tests then fail in a confusing way. Fix: `tsc --build . --force` (the `--force` flag requires `--build` mode in TS6, not `-p`).
+- **Task 0.4** (oa-cli): The `pretest` hook runs `tsc` but with `composite: true` + persistent `tsconfig.tsbuildinfo`, removing only `dist/` causes `tsc` to no-op. Tests then fail in a confusing way. Fix: `tsc --build . --force` (the `--force` flag requires `--build` mode in TS6, not `-p`).
 - **Task 1.4** (locks): The cross-process serialization test gap above. proper-lockfile's in-process `locks` map intercepts second-same-process `lockfile.lock` calls before any FS work — so an in-process test passes even when mkdir-based locking is broken.
 - **Task 1.5** (schemas): `parseInt` on `git rev-list --count` output could return NaN if git ever emits a warning to stdout before the count. NaN compares false to any threshold, silently failing the verify gate as "no commits". Fix: `Number.isFinite` guard.
 - **Task 2.4** (worktree.commitsSince): same NaN concern; same guard added.
+- **Task 7.5** (pidfile lifecycle): the first helper version used a check-then-overwrite write path, which let two contenders both “succeed” under contention. Review forced the live/stale check and rewrite into a single `proper-lockfile` critical section. A second review also caught the startup-signal bug where `runSupervisorEntry` could release another daemon's pidfile before ownership was established; fixed with an `ownsPidfile` gate plus a focused entry regression test.
 
 ### Real schema/contract drift
 
@@ -82,18 +84,19 @@ The two-stage review (spec compliance → code quality) found bugs the implement
 ### Node + TypeScript versioning
 
 - `with { type: 'json' }` import attribute requires Node **22.0+**. We target Node `>=22` (set in Task 0.4 fix-up; was originally `>=20` until claude-cli's `cli.ts` needed the import attribute).
-- TS6 + `verbatimModuleSyntax` + `module: NodeNext` requires `.js` extensions on relative imports in source (e.g., `from './foo.js'` even though the source is `.ts`). New contributors will hit this; brief mention in the README would help (Phase 12 task).
+- TS6 + `verbatimModuleSyntax` + `module: NodeNext` requires `.js` extensions on relative imports in source (e.g. `from './foo.js'` even though the source is `.ts`). New contributors will hit this; brief mention in the README would help (Phase 12 task).
 - TS6's `--force` flag requires `--build` mode (not `-p`). Hit this in Task 0.4 fix-up.
+- Under `pnpm --filter <pkg> test`, `process.cwd()` is the package root, not the repo root. Task 7.5's cross-process pidfile test initially tried to import `packages/oa-core/dist/...` from `process.cwd()` and silently pointed at a nonexistent path. For child-process tests that need built output, resolve from `import.meta.url`, not the shell cwd.
 
 ### proper-lockfile is NOT reentrant
 
-Discovered in Task 3.1 review. `withInboxLock(async () => { await inbox.setStatus(...); })` would silently deadlock for 5s then ELOCKED — because `inbox.setStatus` itself calls `withInboxLock`. Critical carry-forward to Task 3.3 (PlanStore.create()): when sealing a plan, must read+modify+write tasks.json directly inside the outer lock, NOT call `inbox.setStatus`. Phase 7 daemon must pass explicit `onCompromised` to proper-lockfile to avoid unhandled mtime-refresh throws crashing the daemon.
+Discovered in Task 3.1 review. `withInboxLock(async () => { await inbox.setStatus(...); })` would silently deadlock for 5s then `ELOCKED` — because `inbox.setStatus` itself calls `withInboxLock`. Critical carry-forward to Task 3.3 (PlanStore.create()): when sealing a plan, must read+modify+write tasks.json directly inside the outer lock, NOT call `inbox.setStatus`. Phase 7 daemon must pass explicit `onCompromised` to proper-lockfile so unhandled mtime-refresh throws don't crash the daemon.
 
 ### execa, signal, and shell
 
 - For multi-word verify commands like `pnpm test && pnpm lint`, `shell: true` is necessary — without it `&&` and pipes are treated as literal arguments. Task 6.2.
 - `reject: false` on execa keeps await-resolution linear instead of throw-on-non-zero-exit. Established convention since Task 5.2.
-- Manual SIGKILL grace period (`setTimeout(SIGKILL, 500)`) belt-and-suspenders alongside execa's `forceKillAfterDelay: 500`. Observed in Task 5.2 spawn helper.
+- Manual `SIGKILL` grace period (`setTimeout(SIGKILL, 500)`) belt-and-suspenders alongside execa's `forceKillAfterDelay: 500`. Observed in Task 5.2 spawn helper.
 - If a detached child writes to a structured JSONL log, every stderr/stdout failure path must also be structured JSON. Otherwise a single startup error corrupts the whole event stream. Task 7.4 hardened this by emitting `run.error` / `daemon.signal` JSON lines from the child entry and by preflighting the entry path before spawn so Node never gets the chance to print a raw `MODULE_NOT_FOUND` stack into `events.jsonl`.
 
 ### Workspace cycle in the adapter registry
@@ -108,7 +111,7 @@ ADR-0008 promises protocol blocks live at `oa-core/prompts/protocol-status.md` +
 
 ## Connection-error recovery patterns
 
-The session had ~6 implementer subagent timeouts (stream idle / ECONNRESET) over 56 commits. The recovery pattern that consistently worked:
+The session had ~6 implementer subagent timeouts (stream idle / `ECONNRESET`) over 56 commits. The recovery pattern that consistently worked:
 
 1. **Don't reattempt the same prompt blindly.** First check what landed via `git status` and `git log`.
 2. **If the implementer wrote files but didn't commit**, verify via tests/typecheck/lint, then commit directly with the exact message the implementer would have used. (This is a deliberate exception to "don't fix manually" — it's just landing already-correct work, not implementing.)
@@ -164,7 +167,11 @@ The markdown is regenerated from the JSON on every mutation; never the other way
 
 ### Detached-process tests need cleanup hooks
 
-Task 7.4's daemon integration test initially passed green but could leak detached background processes on a red run. The final harness tracks launched planIds and best-effort SIGTERMs/SIGKILLs them in `afterEach`. Any future detached-process or socket-server test should do the same, or CI/dev machines will accumulate orphans when assertions fail mid-test.
+Task 7.4's daemon integration test initially passed green but could leak detached background processes on a red run. The final harness tracks launched planIds and best-effort `SIGTERM`s/`SIGKILL`s them in `afterEach`. Any future detached-process or socket-server test should do the same, or CI/dev machines will accumulate orphans when assertions fail mid-test.
+
+### For signal wiring, capture the registered handler instead of sending real signals in-process
+
+Task 7.5's first entry regression test sent a real `SIGTERM` to the Vitest process, which polluted sibling tests with extra output and made debugging harder. The better pattern is to intercept `process.once('SIGTERM', handler)` and invoke the captured handler directly. It still tests ordering but avoids cross-test process-wide side effects.
 
 ### Stub event writer pattern for tests
 
@@ -177,7 +184,7 @@ function makeStubEventWriter() {
 }
 ```
 
-Reviewer's flag: this stub doesn't validate against EventSchema, so a writer-side schema mismatch wouldn't be caught by these tests. Mitigated by `schemas.test.ts`'s smoke matrix that pins each variant's required field set. The supervisor integration tests in Phase 7 should adopt `validate: true` once the writer's per-emit field set stabilizes.
+Reviewer's flag: this stub doesn't validate against `EventSchema`, so a writer-side schema mismatch wouldn't be caught by these tests. Mitigated by `schemas.test.ts`'s smoke matrix that pins each variant's required field set. The supervisor integration tests in Phase 7 should adopt `validate: true` once the writer's per-emit field set stabilizes.
 
 ---
 
@@ -185,12 +192,13 @@ Reviewer's flag: this stub doesn't validate against EventSchema, so a writer-sid
 
 ### oa-core test suite is fast
 
-361 tests in ~13 seconds (with builds). Each test file averages 12 tests. The longest individual test runs are:
-- ELOCKED timeout test (~5s, by design — exercises proper-lockfile's full retry budget)
-- Cross-process locks test (~1.5s, fork+IPC overhead)
-- runPlan integration tests (~1.5s each, real git repos in tmpdir)
+372 tests in ~14 seconds (with builds). Each test file averages ~11 tests. The longest individual test runs are:
 
-No flakes observed across the 56 commits. The `mark()` mtime-equality test in progress.test.ts uses an 1100ms sleep to accommodate macOS HFS+ 1s mtime resolution; could trim if the test environment is known to have nanosecond mtime.
+- `ELOCKED` timeout test (~5s, by design — exercises proper-lockfile's full retry budget)
+- Cross-process contention tests (~1–1.5s, fork/spawn overhead)
+- `runPlan` integration tests (~1.5s each, real git repos in tmpdir)
+
+No flakes observed across the Phase 7 work once the child-import path in `pidfile.test.ts` moved off `process.cwd()`.
 
 ### EventSchema validation cost
 
@@ -206,9 +214,9 @@ No flakes observed across the 56 commits. The `mark()` mtime-equality test in pr
 
 ### Test-task setup is repetitive
 
-Every test that exercises stores or worktree creates a tmpdir + sets `OA_HOME` + calls `ensureHomeLayout()`. The boilerplate is consistent (~15 lines of beforeEach/afterEach) but appears in ~15 test files. A shared `test/util/setupTmpHome.ts` would help, but no task explicitly extracted it. Future cleanup target.
+Every test that exercises stores or worktree creates a tmpdir + sets `OA_HOME` + calls `ensureHomeLayout()`. The boilerplate is consistent (~15 lines of `beforeEach`/`afterEach`) but appears in ~15 test files. A shared `test/util/setupTmpHome.ts` would help, but no task explicitly extracted it. Future cleanup target.
 
-### snapshot tests are brittle
+### Snapshot tests are brittle
 
 Inline snapshots in `handoff.test.ts` (Task 4.3) and `context.test.ts` (Task 6.4) treat the snapshot as spec. Drift fails without `-u`. This is the right call — the rendered output IS the contract — but means small wording tweaks require re-snapshotting all affected tests. No way to avoid without sacrificing the spec-pinning property.
 
@@ -218,7 +226,7 @@ ADR-0008 promises protocol blocks live at separate files. Not extracted yet. Cap
 
 ### Cross-package cycle
 
-The oa-core ↔ oa-adapter-* workspace cycle is fine for dev but blocks publish. Captured as Phase 12 carry-forward; the fix is small (vi.mock in registry tests).
+The oa-core ↔ oa-adapter-* workspace cycle is fine for dev but blocks publish. Captured as Phase 12 carry-forward; the fix is small (`vi.mock()` in registry tests).
 
 ---
 
@@ -227,5 +235,4 @@ The oa-core ↔ oa-adapter-* workspace cycle is fine for dev but blocks publish.
 The user's pinned memories at `~/.claude/projects/-Users-souler-Nextcloud-test-OvernightAgent/memory/` shaped the design and stayed accurate throughout:
 
 - **`feedback_worktree_absolute_paths.md`**: every worktree-touching code path asserts absolute paths, with ESLint enforcement. Has paid off three times that I know of (the Task 0.3 dist-layout bug, the Task 2.2 silent-EXIST colonization, and several relative-path tests catching regressions).
-
 - **`feedback_record_adrs.md`**: ADRs are first-class. 13 of them now (12 from brainstorming + 1 added during implementation when the ESLint enforcement gap was discovered). Reviewers consistently cross-check ADR text against implementation.

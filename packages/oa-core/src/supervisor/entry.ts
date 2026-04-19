@@ -1,8 +1,7 @@
 import * as fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { pidfile } from '../paths.js';
 import { assertId } from '../ids.js';
-import { writeFileAtomic } from '../atomicJson.js';
+import { acquire, release } from './pidfile.js';
 
 /**
  * Minimal supervisor daemon entry scaffold for Task 7.4.
@@ -19,10 +18,11 @@ export async function runSupervisorEntry(planId: string): Promise<void> {
   const keepAlive = setInterval(() => {}, 60_000);
   let resolveStop: () => void = () => {};
   let stopped = false;
+  let ownsPidfile = false;
   const stopPromise = new Promise<void>((resolve) => {
     resolveStop = resolve;
   });
-  const stop = (signal: NodeJS.Signals): void => {
+  const stop = async (signal: NodeJS.Signals): Promise<void> => {
     if (stopped) return;
     stopped = true;
     fs.writeSync(
@@ -33,25 +33,28 @@ export async function runSupervisorEntry(planId: string): Promise<void> {
         signal,
       }) + '\n',
     );
-    try {
-      fs.unlinkSync(pidfile(planId));
-    } catch {
-      /* ignore */
+    if (ownsPidfile) {
+      try {
+        await release(planId);
+      } catch {
+        /* ignore */
+      }
     }
     clearInterval(keepAlive);
     resolveStop();
   };
-  process.once('SIGTERM', () => stop('SIGTERM'));
-  process.once('SIGINT', () => stop('SIGINT'));
+  process.once('SIGTERM', () => {
+    void stop('SIGTERM');
+  });
+  process.once('SIGINT', () => {
+    void stop('SIGINT');
+  });
 
-  await writeFileAtomic(pidfile(planId), `${process.pid}\n`);
+  await acquire(planId);
+  ownsPidfile = true;
 
   if (stopped) {
-    try {
-      fs.unlinkSync(pidfile(planId));
-    } catch {
-      /* ignore */
-    }
+    await release(planId);
     return;
   }
 
