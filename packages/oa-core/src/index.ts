@@ -133,6 +133,14 @@ export type { AssemblePromptInput } from './verify/context.js';
 // for adjacent state helpers added later.
 export * as progress from './state/progress.js';
 export * as findings from './state/findings.js';
+// Fix-loop synthesizer (Task 6.6). Phase 7's supervisor calls this when the
+// review gate (6.3) returns blocking issues and maxLoops isn't exhausted; the
+// resulting `FixContext` feeds the next iteration's context injector (6.4) as
+// `openReviewIssues`. v0 is a literal passthrough — the surface exists so
+// future versions (deduplication, priority sort, clustering, remediation
+// hints) can land without changing call sites.
+export { synthesizeFixContext } from './verify/fixLoop.js';
+export type { FixContext } from './verify/fixLoop.js';
 // AgentAdapter contract (ADR-0009). Types-only — adapter packages depend on
 // `oa-core`'s public surface and consume these without importing any runtime.
 export type { AgentAdapter, AgentId, AgentRunOpts, AgentRunResult } from './adapter/types.js';
