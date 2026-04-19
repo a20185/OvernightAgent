@@ -552,18 +552,22 @@ export const OaStatusSchema = z
 // (matching every other timestamp in the codebase).
 // -----------------------------------------------------------------------------
 
-export const StepProgressSchema = z.object({
-  n: z.number().int().positive(),
-  status: StepStatus,
-  attempt: z.number().int().positive().optional(),
-  detail: z.string().optional(),
-  updatedAt: z.iso.datetime({ offset: true }),
-});
+export const StepProgressSchema = z
+  .object({
+    n: z.number().int().positive(),
+    status: StepStatus,
+    attempt: z.number().int().positive().optional(),
+    detail: z.string().optional(),
+    updatedAt: z.iso.datetime({ offset: true }),
+  })
+  .strict();
 
-export const ProgressDocSchema = z.object({
-  schemaVersion: z.literal(1),
-  steps: z.array(StepProgressSchema),
-});
+export const ProgressDocSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    steps: z.array(StepProgressSchema),
+  })
+  .strict();
 
 export const OaReviewIssueSchema = z
   .object({
