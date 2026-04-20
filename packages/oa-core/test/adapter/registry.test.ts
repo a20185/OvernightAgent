@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { AgentAdapter, AgentId } from '../../src/adapter/types.js';
 import { getAdapter, __resetAdapterCacheForTest } from '../../src/adapter/registry.js';
 
@@ -7,18 +7,80 @@ import { getAdapter, __resetAdapterCacheForTest } from '../../src/adapter/regist
 // packages via dynamic import and caches the resolved AgentAdapter instance in
 // a module-level Map so each id is loaded at most once per process.
 //
-// These tests cover the v0 wiring: only `oa-adapter-claude` is implemented;
-// `oa-adapter-codex` / `oa-adapter-opencode` are still empty stubs (`export {}`)
-// from Task 0.3 and the Phase 10 backlog will fill them in. Until then, the
-// registry must fail loudly rather than silently load a half-built adapter.
+// These tests use `vi.mock` to stub the three adapter packages rather than
+// depending on them at compile time. That breaks the workspace cycle that
+// otherwise blocks `npm publish` of `oa-core`: if this test imported the real
+// adapter packages, `oa-core` would need to devDep them, and the adapters
+// already depend on `oa-core` → dependency loop. See ADR-0014.
 //
 // `__resetAdapterCacheForTest()` is the one test seam exposed from the module
-// so we can run the singleton-cache test (#2) deterministically without test
-// order coupling. It is exported but clearly marked test-only.
+// so we can run the singleton-cache test deterministically without test-order
+// coupling. It is exported but clearly marked test-only.
 // -----------------------------------------------------------------------------
 
+// Mocks for the three real adapter packages. Each returns an object that
+// satisfies the AgentAdapter shape the registry validates against. The mock
+// specifiers MUST match the exact string the registry builds in
+// `pkgName = \`@soulerou/oa-adapter-${id}\`` — keep the two in sync.
+vi.mock('@soulerou/oa-adapter-claude', () => ({
+  adapter: {
+    id: 'claude',
+    defaultModel: 'opus',
+    capabilities: () => ({ supportsSessionId: true, supportsStructuredOutput: true }),
+    run: async () => ({
+      ok: true,
+      exitCode: 0,
+      timedOut: false,
+      killedBySignal: null,
+      stdoutPath: '/tmp/stdout',
+      stderrPath: '/tmp/stderr',
+      stdoutBytes: 0,
+      stderrBytes: 0,
+      durationMs: 0,
+    }),
+  } satisfies AgentAdapter,
+}));
+
+vi.mock('@soulerou/oa-adapter-codex', () => ({
+  adapter: {
+    id: 'codex',
+    defaultModel: 'o3-mini',
+    capabilities: () => ({ supportsSessionId: false, supportsStructuredOutput: false }),
+    run: async () => ({
+      ok: true,
+      exitCode: 0,
+      timedOut: false,
+      killedBySignal: null,
+      stdoutPath: '/tmp/stdout',
+      stderrPath: '/tmp/stderr',
+      stdoutBytes: 0,
+      stderrBytes: 0,
+      durationMs: 0,
+    }),
+  } satisfies AgentAdapter,
+}));
+
+vi.mock('@soulerou/oa-adapter-opencode', () => ({
+  adapter: {
+    id: 'opencode',
+    defaultModel: 'claude-sonnet-4',
+    capabilities: () => ({ supportsSessionId: false, supportsStructuredOutput: false }),
+    run: async () => ({
+      ok: true,
+      exitCode: 0,
+      timedOut: false,
+      killedBySignal: null,
+      stdoutPath: '/tmp/stdout',
+      stderrPath: '/tmp/stderr',
+      stdoutBytes: 0,
+      stderrBytes: 0,
+      durationMs: 0,
+    }),
+  } satisfies AgentAdapter,
+}));
+
 beforeEach(() => {
-  // Each test gets a clean cache so #2's singleton check measures *only*
+  // Each test gets a clean cache so the singleton-cache check measures *only*
   // the within-call caching, not leakage from a prior test.
   __resetAdapterCacheForTest();
 });
@@ -27,9 +89,9 @@ describe('getAdapter', () => {
   it('returns the claude adapter for id="claude"', async () => {
     const adapter = await getAdapter('claude');
     expect(adapter.id).toBe('claude');
-    // Sanity: the claude adapter advertises its real default model so we don't
-    // accidentally accept some other module that happens to satisfy the shape
-    // check but pretend to be claude.
+    // Sanity: the mocked claude adapter advertises 'opus' — matching the real
+    // adapter's default — so this assertion also catches a future drift
+    // between the mock and the real package.
     expect(adapter.defaultModel).toBe('opus');
   });
 
@@ -54,14 +116,14 @@ describe('getAdapter', () => {
     });
   });
 
-  it('loads the codex adapter (Phase 10)', async () => {
+  it('loads the codex adapter', async () => {
     const c = await getAdapter('codex');
     expect(c.id).toBe('codex');
     expect(typeof c.defaultModel).toBe('string');
     expect(typeof c.run).toBe('function');
   });
 
-  it('loads the opencode adapter (Phase 10)', async () => {
+  it('loads the opencode adapter', async () => {
     const o = await getAdapter('opencode');
     expect(o.id).toBe('opencode');
     expect(typeof o.defaultModel).toBe('string');

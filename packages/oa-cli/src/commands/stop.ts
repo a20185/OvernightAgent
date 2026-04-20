@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises';
 import { Command } from 'commander';
-import { controlSocket, socketPath, pidfile, plan } from 'oa-core';
+import { controlSocket, socketPath, pidfile, plan } from '@soulerou/oa-core';
 
 async function latestRunningPlanId(): Promise<string | null> {
   const plans = await plan.list();

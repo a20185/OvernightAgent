@@ -239,7 +239,23 @@ ADR-0008 promises protocol blocks live at separate files. Not extracted yet. Cap
 
 ### Cross-package cycle
 
-The oa-core ↔ oa-adapter-* workspace cycle is fine for dev but blocks publish. Captured as Phase 12 carry-forward; the fix is small (`vi.mock()` in registry tests).
+The oa-core ↔ oa-adapter-* workspace cycle is fine for dev but blocks publish. Captured as Phase 12 carry-forward; the fix is small (`vi.mock()` in registry tests). **Resolved in ADR-0014 (2026-04-20)** — the mock swap landed, devDeps dropped, dependency graph is a clean DAG.
+
+### `entry.integration.test.ts` EADDRINUSE flake
+
+`oa-core/test/supervisor/entry.integration.test.ts` ("starts the real supervisor entry, serves stop over the control socket, and exits") intermittently fails with `EADDRINUSE` on the control socket inside a mkdtemp'd home — e.g. `/var/folders/.../T/oa-test-entry-<id>/home/runs/p_.../oa.sock`. Always passes on rerun after `rm -rf /var/folders/.../T/oa-test-entry-*`.
+
+Root cause hypothesis: a prior crashed or killed test left the AF_UNIX socket on disk, and `listenWithStaleCleanup` (`controlSocket.ts:100–104`) only unlinks if `fs.existsSync(absPath)` is true at the check moment — there's a narrow race where the previous test's forked child may still hold the socket when vitest moves on, or where mkdtemp path reuse + macOS fs caching leaves the file stat-invisible but un-bindable.
+
+Low-priority because:
+- Always a fresh `fs.mkdtemp` dir per test, so the collision window is tiny.
+- Happens at most once per full `pnpm -r test` sweep; rerun always green.
+- Doesn't affect `runPlan` / `resumePlan` production paths — only the entry-harness integration test.
+
+Follow-up ideas (not implemented; post-v0.1.0 cleanup):
+1. `afterEach` in `entry.integration.test.ts` that `fs.unlink` the socket path explicitly, independent of the `mkdtemp` rm.
+2. Tighten `listenWithStaleCleanup` to always `unlink(..., { force: true })` before `listen()` — makes the race impossible rather than papering over it. Right long-term fix.
+3. Ensure the forked child is fully reaped (`await once(child, 'exit')`) before the test's `afterEach` returns, so no process still holds the socket FD at cleanup time.
 
 ---
 

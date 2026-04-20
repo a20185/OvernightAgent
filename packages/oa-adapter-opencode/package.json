@@ -1,10 +1,29 @@
 {
-  "name": "oa-adapter-opencode",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@soulerou/oa-adapter-opencode",
+  "version": "0.1.0",
+  "description": "Headless opencode AgentAdapter for OvernightAgent.",
+  "keywords": ["overnight-agent", "oa", "adapter", "opencode"],
+  "author": "Souler Ou",
+  "license": "MIT",
+  "homepage": "https://github.com/a20185/OvernightAgent#readme",
+  "bugs": {
+    "url": "https://github.com/a20185/OvernightAgent/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/a20185/OvernightAgent.git",
+    "directory": "packages/oa-adapter-opencode"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "tsc -p .",
     "pretest": "tsc --build . --force",
@@ -13,6 +32,6 @@
     "typecheck": "tsc -p . --noEmit"
   },
   "dependencies": {
-    "oa-core": "workspace:*"
+    "@soulerou/oa-core": "workspace:*"
   }
 }

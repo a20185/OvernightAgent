@@ -38,30 +38,30 @@ importers:
 
   packages/oa-adapter-claude:
     dependencies:
-      oa-core:
+      '@soulerou/oa-core':
         specifier: workspace:*
         version: link:../oa-core
 
   packages/oa-adapter-codex:
     dependencies:
-      oa-core:
+      '@soulerou/oa-core':
         specifier: workspace:*
         version: link:../oa-core
 
   packages/oa-adapter-opencode:
     dependencies:
-      oa-core:
+      '@soulerou/oa-core':
         specifier: workspace:*
         version: link:../oa-core
 
   packages/oa-cli:
     dependencies:
+      '@soulerou/oa-core':
+        specifier: workspace:*
+        version: link:../oa-core
       commander:
         specifier: ~14.0.3
         version: 14.0.3
-      oa-core:
-        specifier: workspace:*
-        version: link:../oa-core
 
   packages/oa-core:
     dependencies:
@@ -81,15 +81,6 @@ importers:
       '@types/proper-lockfile':
         specifier: ~4.1.4
         version: 4.1.4
-      oa-adapter-claude:
-        specifier: workspace:*
-        version: link:../oa-adapter-claude
-      oa-adapter-codex:
-        specifier: workspace:*
-        version: link:../oa-adapter-codex
-      oa-adapter-opencode:
-        specifier: workspace:*
-        version: link:../oa-adapter-opencode
 
 packages:
 

@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { runPlan, detachAndRun, plan } from 'oa-core';
+import { runPlan, detachAndRun, plan } from '@soulerou/oa-core';
 
 export function registerRunCommand(program: Command): void {
   program

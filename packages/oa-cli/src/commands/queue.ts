@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { queue } from 'oa-core';
+import { queue } from '@soulerou/oa-core';
 
 export function registerQueueCommands(program: Command): void {
   const q = program

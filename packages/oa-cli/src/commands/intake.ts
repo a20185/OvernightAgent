@@ -1,8 +1,8 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { Command } from 'commander';
-import { submit, inbox, IntakeSchema, taskDir } from 'oa-core';
-import type { IntakeSubmitInput, Intake } from 'oa-core';
+import { submit, inbox, IntakeSchema, taskDir } from '@soulerou/oa-core';
+import type { IntakeSubmitInput, Intake } from '@soulerou/oa-core';
 
 /**
  * `oa intake submit` reads a submission payload (JSON) and dispatches

@@ -1,9 +1,10 @@
 # OvernightAgent — Session Handoff
 
 **Final checkpoint commit:** `19525e7` (Phase 12 — docs + e2e + ADR alignment)
-**Branch:** `dev` (cut from `master`; design docs are on `master`)
-**Status:** All 64 sub-tasks across Phases 0–12 complete. v0 ships.
-**Verification:** `pnpm -r typecheck && pnpm -r lint && pnpm -r build && pnpm -r test` all green — 426 tests across 5 packages.
+**Post-v0 release prep:** scope rename + cycle break + bundled shims (ADR-0014).
+**Branch:** `main`
+**Status:** All 64 sub-tasks across Phases 0–12 complete. v0.1.0 ready for npm publish.
+**Verification:** `pnpm -r typecheck && pnpm -r lint && pnpm -r build && pnpm -r test` all green — 435 tests across 5 packages.
 
 ---
 
@@ -43,7 +44,7 @@ and `docs/adr/`. Implementation plan is at
 
 ## Key artifacts
 
-**CLI (oa-cli):** 11 commands registered in `packages/oa-cli/src/cli.ts`:
+**CLI (`@soulerou/oa-cli`):** 12 commands registered in `packages/oa-cli/src/cli.ts`:
 - `intake submit|list|show|rm`
 - `queue add|ls|rm|clear`
 - `plan create|show|ls`
@@ -54,12 +55,14 @@ and `docs/adr/`. Implementation plan is at
 - `rerun <planId> [--detach]`
 - `archive <id>`
 - `summary <planId> [--stdout]`
+- `shims install [--host claude|codex|opencode|all] [--scope project|user] [--dry-run] [--force]`
 
 **Adapters:** All three headless adapters wired through
-`oa-core/src/adapter/registry.ts`:
-- `oa-adapter-claude`: `claude -p <prompt> --model <M> --output-format stream-json`
-- `oa-adapter-codex`: `codex exec --model <M> --prompt-file <abs>`
-- `oa-adapter-opencode`: `opencode run --model <M> --prompt-file <abs>`
+`@soulerou/oa-core`'s `src/adapter/registry.ts` (dynamic import of
+`@soulerou/oa-adapter-<id>`):
+- `@soulerou/oa-adapter-claude`: `claude -p <prompt> --model <M> --output-format stream-json`
+- `@soulerou/oa-adapter-codex`: `codex exec --model <M> --prompt-file <abs>`
+- `@soulerou/oa-adapter-opencode`: `opencode run --model <M> --prompt-file <abs>`
 
 **Supervisor:** `oa-core/src/supervisor/`
 - `bootstrap.ts`, `runPlan.ts`, `resume.ts`, `daemon.ts`, `entry.ts`,
@@ -69,8 +72,11 @@ and `docs/adr/`. Implementation plan is at
 **Summary / events:** `oa-core/src/events/{writer.ts,reader.ts}` +
 `oa-core/src/summary/render.ts`. Auto-rendered on every plan end.
 
-**Shims:** `packages/oa-shims/{claude,codex,opencode}/commands/` — pure
-markdown resource files for each host's slash-command installer.
+**Shims:** `packages/oa-shims/{claude,codex,opencode}/{commands,skills}/` —
+pure markdown resource files for each host. At `@soulerou/oa-cli` build
+time, `scripts/bundle-shims.mjs` copies the tree into
+`packages/oa-cli/dist/shims/<host>/`, and `oa shims install` copies from
+there to host-specific target dirs at user install time. ADR-0014.
 
 ---
 
@@ -79,18 +85,19 @@ markdown resource files for each host's slash-command installer.
 ```sh
 cd /Users/souler/Nextcloud/test/OvernightAgent
 pnpm install
-pnpm -r build && pnpm -r test        # 426 tests, all green
+pnpm -r build && pnpm -r test        # 435 tests, all green
 node packages/oa-cli/dist/cli.js --help
+pnpm release:dry-run                 # see what would be published
 ```
 
 ---
 
 ## Known v0 limits (captured from carry-forwards)
 
-1. **Workspace cycle:** `oa-core` devDeps the adapter packages for the
-   registry. `pnpm` resolves via symlinks; blocks `npm publish`. Fix is
-   deferred to post-v0: replace the devDeps + real import with `vi.mock`
-   in `registry.test.ts` and a stub-only load path.
+1. ~~**Workspace cycle:** `oa-core` devDeps the adapter packages for the
+   registry.~~ **Resolved in ADR-0014** (2026-04-20): `registry.test.ts`
+   now uses `vi.mock` for the three adapter packages, and the devDeps
+   were dropped. Publish-blocking cycle is gone.
 2. **Reviewer prompt race:** `<runDir>/reviewer-default-prompt.md` is
    materialized once per run; would collide if `parallel.max > 1` is
    ever actually implemented. Add per-task suffix when parallel mode

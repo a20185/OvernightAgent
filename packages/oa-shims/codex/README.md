@@ -1,14 +1,25 @@
 # OvernightAgent shim for Codex
 
-Install the slash command bindings:
+## Install via npm (recommended)
+
+```sh
+oa shims install --host codex         # copies into ~/.codex/prompts/
+oa shims install --host codex --force # overwrite local edits
+```
+
+Codex is user-scope only in v0 (the prompt dir is `~/.codex/prompts/`, not
+project-local). `--scope project` is refused with a clear error.
+
+## Install from source
 
 ```sh
 mkdir -p ~/.codex/prompts
 cp packages/oa-shims/codex/commands/*.md ~/.codex/prompts/
 ```
 
-Adjust the destination to wherever your Codex install reads prompt bindings
-(check the Codex docs — binding layout has moved between versions).
+Adjust the destination if your Codex install reads prompt bindings from a
+different path (check the Codex docs — binding layout has moved between
+versions).
 
 ## Available commands
 

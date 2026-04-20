@@ -1,23 +1,42 @@
 {
-  "name": "oa-cli",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@soulerou/oa-cli",
+  "version": "0.1.0",
+  "description": "OvernightAgent CLI — the `oa` binary. Run coding agents (claude/codex/opencode) unattended overnight against a queue of task plans.",
+  "keywords": ["overnight-agent", "oa", "cli", "agent", "claude", "codex", "opencode", "unattended"],
+  "author": "Souler Ou",
+  "license": "MIT",
+  "homepage": "https://github.com/a20185/OvernightAgent#readme",
+  "bugs": {
+    "url": "https://github.com/a20185/OvernightAgent/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/a20185/OvernightAgent.git",
+    "directory": "packages/oa-cli"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
     "oa": "./dist/cli.js"
   },
+  "files": ["dist", "README.md", "LICENSE"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "build": "tsc -p .",
+    "build": "tsc -p . && node scripts/bundle-shims.mjs",
     "dev": "tsx src/cli.ts",
-    "pretest": "tsc --build . --force",
+    "pretest": "tsc --build . --force && node scripts/bundle-shims.mjs",
     "test": "vitest run",
     "lint": "eslint src test",
     "typecheck": "tsc -p . --noEmit"
   },
   "dependencies": {
     "commander": "~14.0.3",
-    "oa-core": "workspace:*"
+    "@soulerou/oa-core": "workspace:*"
   }
 }

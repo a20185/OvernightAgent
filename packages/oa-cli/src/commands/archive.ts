@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { Command } from 'commander';
-import { oaHome, taskDir, runDir, inbox, plan } from 'oa-core';
+import { oaHome, taskDir, runDir, inbox, plan } from '@soulerou/oa-core';
 
 /**
  * `oa archive <id>` moves either `<oaHome>/tasks/<id>/` or

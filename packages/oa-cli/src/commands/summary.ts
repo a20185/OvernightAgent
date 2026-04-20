@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import { Command } from 'commander';
-import { eventsReader, summary, runDir, writeFileAtomic } from 'oa-core';
+import { eventsReader, summary, runDir, writeFileAtomic } from '@soulerou/oa-core';
 
 export function registerSummaryCommand(program: Command): void {
   program

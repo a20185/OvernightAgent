@@ -1,18 +1,21 @@
 # OvernightAgent shim for Claude Code
 
-Install the slash commands:
+## Install via npm (recommended)
 
 ```sh
-# From a project root where you want `/oa-intake` etc. available:
-mkdir -p .claude/commands
-ln -s "$(pwd)/packages/oa-shims/claude/commands"/*.md .claude/commands/
-
-# And the skill, if the host separates skills from commands:
-mkdir -p .claude/skills
-ln -s "$(pwd)/packages/oa-shims/claude/skills/oa-intake" .claude/skills/oa-intake
+oa shims install --host claude                 # ./.claude/{commands,skills}/
+oa shims install --host claude --scope user    # ~/.claude/{commands,skills}/
+oa shims install --host claude --force         # overwrite local edits
 ```
 
-Or copy the files instead of symlinking if you want to edit them locally.
+## Install from source
+
+```sh
+# Symlink from a repo checkout — useful if you want to edit the markdown live.
+mkdir -p .claude/commands .claude/skills
+ln -s "$(pwd)/packages/oa-shims/claude/commands"/*.md .claude/commands/
+ln -s "$(pwd)/packages/oa-shims/claude/skills/oa-intake" .claude/skills/oa-intake
+```
 
 ## Available commands
 
@@ -23,5 +26,5 @@ Or copy the files instead of symlinking if you want to edit them locally.
 
 ## Requirements
 
-- `oa` CLI installed on PATH (see repo root README).
+- `oa` CLI installed on PATH (see repo root README or `pnpm add -g @soulerou/oa-cli`).
 - `$OA_HOME` set if you want a non-default state dir.

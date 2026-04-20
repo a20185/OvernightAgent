@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { plan, queue } from 'oa-core';
+import { plan, queue } from '@soulerou/oa-core';
 
 function parseOptionalInt(raw: string | undefined, flag: string): number | undefined {
   if (raw === undefined) return undefined;

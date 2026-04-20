@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises';
-import { assertAbs, spawnHeadless } from 'oa-core';
-import type { AgentAdapter, AgentRunOpts, AgentRunResult } from 'oa-core';
+import { assertAbs, spawnHeadless } from '@soulerou/oa-core';
+import type { AgentAdapter, AgentRunOpts, AgentRunResult } from '@soulerou/oa-core';
 
 /**
  * Headless `opencode` AgentAdapter (ADR-0009). Mirrors the claude/codex

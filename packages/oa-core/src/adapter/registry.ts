@@ -48,7 +48,7 @@ export async function getAdapter(id: AgentId): Promise<AgentAdapter> {
   // Step 1: literal-set guard. TS already rules this out at compile time, but
   // values arriving via JSON.parse / IPC / shim bridges have no static
   // provenance — without this guard a typo in a queue.json file would attempt
-  // a dynamic import of `oa-adapter-<typo>` and fail with whatever obscure
+  // a dynamic import of `@soulerou/oa-adapter-<typo>` and fail with whatever obscure
   // resolver error the runtime emits.
   if (!VALID_IDS.has(id)) {
     throw new Error(`unknown adapter id: ${JSON.stringify(id)}`);
@@ -57,10 +57,10 @@ export async function getAdapter(id: AgentId): Promise<AgentAdapter> {
   const cached = cache.get(id);
   if (cached !== undefined) return cached;
 
-  const pkgName = `oa-adapter-${id}`;
+  const pkgName = `@soulerou/oa-adapter-${id}`;
 
   // Step 2: dynamic import. Wrapped so the error message names the package
-  // (Node's default `Cannot find package 'oa-adapter-foo'` is fine but easy
+  // (Node's default `Cannot find package '@soulerou/oa-adapter-foo'` is fine but easy
   // to miss in a stack trace). Original error attached as `cause` per ES2022
   // Error options for callers that want to inspect it.
   let mod: { adapter?: unknown };

@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { adapter } from '../src/index.js';
-import type { AgentRunOpts } from 'oa-core';
+import type { AgentRunOpts } from '@soulerou/oa-core';
 
 // -----------------------------------------------------------------------------
 // Tests for the headless `claude` AgentAdapter.

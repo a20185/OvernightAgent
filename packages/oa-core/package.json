@@ -1,10 +1,29 @@
 {
-  "name": "oa-core",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@soulerou/oa-core",
+  "version": "0.1.0",
+  "description": "Core engine for OvernightAgent — schemas, worktree manager, four-gate verify pipeline, supervisor, events, and SUMMARY renderer.",
+  "keywords": ["overnight-agent", "oa", "agent", "supervisor", "worktree", "claude", "codex", "opencode"],
+  "author": "Souler Ou",
+  "license": "MIT",
+  "homepage": "https://github.com/a20185/OvernightAgent#readme",
+  "bugs": {
+    "url": "https://github.com/a20185/OvernightAgent/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/a20185/OvernightAgent.git",
+    "directory": "packages/oa-core"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "tsc -p .",
     "pretest": "tsc --build . --force",
@@ -19,9 +38,6 @@
     "zod": "~4.3.6"
   },
   "devDependencies": {
-    "@types/proper-lockfile": "~4.1.4",
-    "oa-adapter-claude": "workspace:*",
-    "oa-adapter-codex": "workspace:*",
-    "oa-adapter-opencode": "workspace:*"
+    "@types/proper-lockfile": "~4.1.4"
   }
 }

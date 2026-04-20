@@ -5,7 +5,7 @@
 [![Node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/typescript-6.x-blue)](https://www.typescriptlang.org/)
 [![pnpm](https://img.shields.io/badge/pnpm-9.x-orange)](https://pnpm.io/)
-[![Tests](https://img.shields.io/badge/tests-426%20passing-success)](#development)
+[![Tests](https://img.shields.io/badge/tests-435%20passing-success)](#development)
 [![Status](https://img.shields.io/badge/status-v0-lightgrey)](#status--v0)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -95,14 +95,13 @@ less great at 8-hour queues where:
 
 ## Install
 
-Requires **Node ≥ 22** (for JSON import attributes) and **pnpm 9+**.
+Requires **Node ≥ 22** (for JSON import attributes).
+
+### From npm (recommended)
 
 ```sh
-git clone <this repo>
-cd OvernightAgent
-pnpm install
-pnpm -r build
-pnpm --filter oa-cli link --global   # makes `oa` available on PATH
+pnpm add -g @soulerou/oa-cli
+# or: npm install -g @soulerou/oa-cli
 ```
 
 Verify:
@@ -112,16 +111,29 @@ oa --version
 oa --help
 ```
 
-### Host-agent shims (optional, recommended)
-
-Drive `oa` from inside your coding agent with slash commands:
+### From source
 
 ```sh
-# Claude Code
-mkdir -p .claude/commands
-ln -s "$(pwd)/packages/oa-shims/claude/commands"/*.md .claude/commands/
+git clone https://github.com/a20185/OvernightAgent.git
+cd OvernightAgent
+pnpm install
+pnpm -r build
+pnpm --filter @soulerou/oa-cli link --global   # makes `oa` available on PATH
+```
 
-# Codex or opencode — see packages/oa-shims/<host>/README.md
+### Host-agent shims (optional, recommended)
+
+Drive `oa` from inside your coding agent with slash commands — one command
+copies the bundled shim markdown into each host's convention-specific dir:
+
+```sh
+oa shims install --host all                # installs all three with host defaults
+oa shims install --host claude             # project scope: ./.claude/{commands,skills}/
+oa shims install --host claude --scope user  # user scope:    ~/.claude/{commands,skills}/
+oa shims install --host codex              # ~/.codex/prompts/
+oa shims install --host opencode           # ~/.config/opencode/commands/
+oa shims install --host all --dry-run      # preview without writing
+oa shims install --host claude --force     # overwrite local edits
 ```
 
 You now get `/oa-intake`, `/oa-queue`, `/oa-plan`, `/oa-status` inside
@@ -227,6 +239,7 @@ step lands `done`, hits the attempt budget, or is marked blocked:
 | `oa rerun <planId> [--detach]` | Resume after crash / stop; rewinds in-flight worktrees |
 | `oa summary <planId> [--stdout]` | (Re-)render `SUMMARY.md` from events |
 | `oa archive <id>` | Move a task or run folder to `_archive/` |
+| `oa shims install [--host <h>] [--scope <s>] [--dry-run] [--force]` | Copy bundled slash-command markdown into the host's convention dir |
 
 Run `oa <cmd> --help` for the full option list on any subcommand.
 
@@ -269,16 +282,16 @@ Every JSON file carries `schemaVersion: 1`. Every write is `writeFileAtomic`
 
 ## Architecture
 
-`oa` is a pnpm monorepo of five packages:
+`oa` is a pnpm monorepo published under the `@soulerou` scope:
 
 | Package | Role |
 |---|---|
-| [`oa-core`](packages/oa-core) | Schemas, paths, id mint, atomic JSON, worktree manager, intake parser, verify pipeline, fix-loop, events reader/writer, supervisor (`runPlan` + `resumePlan`), daemon launcher, pidfile, control socket, SUMMARY renderer |
-| [`oa-cli`](packages/oa-cli) | Commander-based CLI; every subcommand wraps an oa-core API |
-| [`oa-adapter-claude`](packages/oa-adapter-claude) | Headless `claude -p` invoker + `session_id` parser (stream-json) |
-| [`oa-adapter-codex`](packages/oa-adapter-codex) | Headless `codex exec` invoker |
-| [`oa-adapter-opencode`](packages/oa-adapter-opencode) | Headless `opencode run` invoker |
-| [`oa-shims/{claude,codex,opencode}`](packages/oa-shims) | Slash-command resource bundles — pure markdown, no JS |
+| [`@soulerou/oa-core`](packages/oa-core) | Schemas, paths, id mint, atomic JSON, worktree manager, intake parser, verify pipeline, fix-loop, events reader/writer, supervisor (`runPlan` + `resumePlan`), daemon launcher, pidfile, control socket, SUMMARY renderer |
+| [`@soulerou/oa-cli`](packages/oa-cli) | Commander-based CLI; every subcommand wraps an `@soulerou/oa-core` API. Bundles the host-agent shims under `dist/shims/` and exposes them via `oa shims install`. |
+| [`@soulerou/oa-adapter-claude`](packages/oa-adapter-claude) | Headless `claude -p` invoker + `session_id` parser (stream-json) |
+| [`@soulerou/oa-adapter-codex`](packages/oa-adapter-codex) | Headless `codex exec` invoker |
+| [`@soulerou/oa-adapter-opencode`](packages/oa-adapter-opencode) | Headless `opencode run` invoker |
+| [`packages/oa-shims/{claude,codex,opencode}`](packages/oa-shims) | Slash-command resource bundles — pure markdown, no JS. Source of what `oa shims install` ships. Not published separately. |
 
 The supervisor is agent-agnostic — it depends only on the `AgentAdapter`
 interface (ADR-0009) and resolves concrete adapters via a lazy registry.
@@ -294,7 +307,7 @@ Everything interesting was argued out in writing before it was coded:
 
 - [**Design doc**](docs/plans/2026-04-18-overnight-agent-taskmanager-design.md) — full §1–§8 system design
 - [**Implementation plan**](docs/plans/2026-04-18-overnight-agent-taskmanager-implementation.md) — the 13-phase roadmap this repo was built against
-- [**ADRs 0001–0013**](docs/adr/) — every major decision with context + alternatives:
+- [**ADRs 0001–0014**](docs/adr/) — every major decision with context + alternatives:
 
 | ADR | Topic |
 |---|---|
@@ -311,17 +324,30 @@ Everything interesting was argued out in writing before it was coded:
 | 0011 | Strategy as orthogonal toggles |
 | 0012 | Daemon control via Unix socket |
 | 0013 | ESLint path-discipline enforcement gaps |
+| 0014 | Scoped npm publish, cycle break, bundled shims |
 
 ---
 
 ## Development
 
 ```sh
-pnpm -r build        # compile every package
-pnpm -r test         # vitest — 426 tests across 5 packages
+pnpm -r build        # compile every package (oa-cli also bundles shims)
+pnpm -r test         # vitest — 435 tests across 5 packages
 pnpm -r lint         # eslint
 pnpm -r typecheck    # tsc --noEmit
 ```
+
+### Release
+
+```sh
+pnpm version:patch      # or version:minor / version:major — bumps all 5 packages together
+pnpm release:dry-run    # show what `pnpm -r publish` would upload
+pnpm release            # four-gate verify + `pnpm -r publish --access public`
+```
+
+pnpm refuses to publish from a dirty working tree; commit first. The scope
+`@soulerou` must be owned by the publishing npm account. See
+[ADR-0014](docs/adr/0014-scoped-publish-and-bundled-shims.md).
 
 ### House rules
 
@@ -350,20 +376,20 @@ pnpm -r typecheck    # tsc --noEmit
 
 ## Status — v0
 
-All 64 sub-tasks across Phases 0–12 are complete; 426 tests pass.
+All 64 sub-tasks across Phases 0–12 are complete; 435 tests pass.
+Published to npm under `@soulerou` (see [ADR-0014](docs/adr/0014-scoped-publish-and-bundled-shims.md)).
 
 **Known v0 limits** (slated for post-v0 follow-up):
 
 - `parallel.max > 1` is accepted by the schema but the supervisor is
   sequential. Two tasks never run concurrently in v0.
-- Workspace has a cyclic dep (`oa-core` devDeps the adapter packages
-  for the lazy registry). `pnpm` resolves it; blocks `npm publish`.
-  Fix path: replace with `vi.mock` in registry tests.
 - `runs/<planId>/reviewer-default-prompt.md` is materialized once per
   run — would race if parallel mode lands. Add a per-task suffix then.
 - ADR-0008 promised `oa-core/prompts/protocol-status.md` +
   `protocol-review.md`; blocks are currently inlined as constants in
   `verify/context.ts` + `verify/review.ts`. Deferred (see the ADR).
+- `oa shims` has no `uninstall` / `update` subcommands; reversal is
+  manual `rm`. v0 scope (see ADR-0014 follow-ups).
 
 See [`HANDOFF.md`](HANDOFF.md) + [`PROGRESS.md`](PROGRESS.md) for the
 session-level audit trail.

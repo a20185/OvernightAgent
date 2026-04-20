@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { resumePlan, detachAndRun } from 'oa-core';
+import { resumePlan, detachAndRun } from '@soulerou/oa-core';
 
 export function registerRerunCommand(program: Command): void {
   program
