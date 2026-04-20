@@ -609,7 +609,11 @@ async function runStep(
     });
 
     if (attempt < maxLoops) {
-      const fixCtx = synthesizeFixContext(reviewResult.blocking);
+      const fixCtx = synthesizeFixContext({
+        attempt,
+        thresholds: { soft: Math.max(1, Math.ceil(maxLoops * 0.6)), hard: maxLoops },
+        issues: reviewResult.blocking,
+      });
       prevIssues = fixCtx.openReviewIssues;
       // Only emit step.fix.synthesized on the path that actually USES the
       // synthesized fix context — i.e. there's at least one more attempt.

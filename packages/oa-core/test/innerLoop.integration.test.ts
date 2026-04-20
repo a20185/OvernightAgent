@@ -208,7 +208,8 @@ async function runInnerLoop(opts: InnerLoopOpts): Promise<InnerLoopResult> {
     }
     // Hand the blocking issues to the synthesizer; the returned context flows
     // into the next iteration's assemblePrompt as openReviewIssues.
-    prevIssues = synthesizeFixContext(reviewResult.blocking).openReviewIssues;
+    const thresholds = { soft: Math.max(1, Math.ceil(opts.maxLoops * 0.6)), hard: opts.maxLoops };
+    prevIssues = synthesizeFixContext({ attempt, thresholds, issues: reviewResult.blocking }).openReviewIssues;
   }
   return { outcome: 'blocked-needs-human', attemptsRun: attempt, finalReviewIssues: lastReviewIssues };
 }

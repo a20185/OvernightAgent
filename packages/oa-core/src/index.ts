@@ -144,7 +144,7 @@ export * as findings from './state/findings.js';
 // future versions (deduplication, priority sort, clustering, remediation
 // hints) can land without changing call sites.
 export { synthesizeFixContext } from './verify/fixLoop.js';
-export type { FixContext } from './verify/fixLoop.js';
+export type { FixContext, FixContextBlock, SynthesizeFixContextOpts } from './verify/fixLoop.js';
 // AgentAdapter contract (ADR-0009). Types-only — adapter packages depend on
 // `oa-core`'s public surface and consume these without importing any runtime.
 export type {
