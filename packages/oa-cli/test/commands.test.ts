@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
@@ -128,5 +128,71 @@ describe('oa CLI subcommands', () => {
     const r = run(['tail', '--once', planId], { OA_HOME });
     expect(r.status).toBe(0);
     expect(r.stdout).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unit tests for `oa run --sandbox` flag (Task 5.6).
+// These use vi.mock to intercept runPlan and verify the sandboxOverride flag
+// is forwarded without needing a full subprocess + plan on disk.
+// ---------------------------------------------------------------------------
+const runPlanMock = vi.fn().mockResolvedValue({
+  planId: 'p_test',
+  outcome: 'done',
+  taskOutcomes: [],
+  durationMs: 100,
+});
+
+vi.mock('@soulerou/oa-core', () => ({
+  runPlan: (...args: unknown[]) => runPlanMock(...args),
+  detachAndRun: vi.fn(),
+  plan: {
+    list: vi.fn().mockResolvedValue([]),
+    get: vi.fn().mockResolvedValue(null),
+  },
+}));
+
+describe('oa run --sandbox unit', () => {
+  it('forwards sandboxOverride=true to runPlan when --sandbox is set', async () => {
+    const { Command } = await import('commander');
+    const { registerRunCommand } = await import('../src/commands/run.js');
+
+    const program = new Command();
+    program.exitOverride(); // prevent process.exit from killing the test
+    registerRunCommand(program);
+
+    // parseAsync will call the action, which calls our mocked runPlan.
+    try {
+      await program.parseAsync(['node', 'oa', 'run', '--sandbox', 'p_test']);
+    } catch {
+      // Commander may throw due to exitOverride; that's fine — we only care
+      // about the mock being called.
+    }
+
+    expect(runPlanMock).toHaveBeenCalledOnce();
+    const callOpts = runPlanMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(callOpts.sandboxOverride).toBe(true);
+    expect(callOpts.planId).toBe('p_test');
+  });
+
+  it('does not set sandboxOverride when --sandbox is omitted', async () => {
+    runPlanMock.mockClear();
+    const { Command } = await import('commander');
+    const { registerRunCommand } = await import('../src/commands/run.js');
+
+    const program = new Command();
+    program.exitOverride();
+    registerRunCommand(program);
+
+    try {
+      await program.parseAsync(['node', 'oa', 'run', 'p_test']);
+    } catch {
+      // expected — exitOverride may throw
+    }
+
+    expect(runPlanMock).toHaveBeenCalledOnce();
+    const callOpts = runPlanMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(callOpts.sandboxOverride).toBeUndefined();
+    expect(callOpts.planId).toBe('p_test');
   });
 });

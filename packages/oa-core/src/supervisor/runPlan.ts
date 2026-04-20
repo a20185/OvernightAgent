@@ -94,6 +94,8 @@ export interface RunPlanOpts {
   reviewerAdapterFactory?: (agentId: string) => AgentAdapter | Promise<AgentAdapter>;
   /** Override of `<runDir(planId)>/events.jsonl`. Tests use this rarely; prod never. */
   eventsPath?: string;
+  /** CLI `--sandbox` override: when true, force `intake.sandbox.enabled = true` for every task (in-memory only). */
+  sandboxOverride?: boolean;
 }
 
 export type PlanOutcome = 'done' | 'partial' | 'stopped' | 'budget-exhausted';
@@ -736,6 +738,11 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
   //      status is flipped to 'running'. This keeps the run fully pristine so
   //      the operator can fix the config and re-run without cleanup.
   if (process.platform !== 'darwin') {
+    // When sandboxOverride is set, every task will be sandboxed regardless of
+    // per-task config, so fail-fast immediately.
+    if (opts.sandboxOverride === true) {
+      throw new Error(`sandbox requested but unsupported on ${process.platform}`);
+    }
     for (const tid of sealed.taskListIds) {
       const intake = await loadIntake(taskDir(tid));
       if (intake.sandbox?.enabled) {
@@ -862,6 +869,11 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
 
       const taskFolder = taskDir(taskId);
       const intake = await loadIntake(taskFolder);
+      // CLI `--sandbox` override: force sandbox.enabled without mutating the
+      // sealed intake on disk. Runtime-only, per ADR-0016.
+      if (opts.sandboxOverride === true) {
+        intake.sandbox = { enabled: true, extraAllowPaths: intake.sandbox?.extraAllowPaths ?? [] };
+      }
       const stepsDoc = await loadSteps(taskFolder);
 
       await inbox.setStatus(taskId, 'running');

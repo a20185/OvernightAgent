@@ -7,10 +7,11 @@ export function registerRunCommand(program: Command): void {
     .description('run a sealed plan (foreground) or detach it (--detach)')
     .option('--detach', 'spawn the supervisor daemon and return')
     .option('--dry-run', 'print taskList ordering without executing')
+    .option('--sandbox', 'wrap each adapter spawn in macOS sandbox-exec')
     .action(
       async (
         planIdArg: string | undefined,
-        opts: { detach?: boolean; dryRun?: boolean },
+        opts: { detach?: boolean; dryRun?: boolean; sandbox?: boolean },
       ) => {
         let planId = planIdArg;
         if (planId === undefined) {
@@ -48,7 +49,7 @@ export function registerRunCommand(program: Command): void {
         process.once('SIGINT', onSig);
         process.once('SIGTERM', onSig);
         try {
-          const res = await runPlan({ planId, signal: ac.signal });
+          const res = await runPlan({ planId, signal: ac.signal, sandboxOverride: opts.sandbox });
           process.stdout.write(`${JSON.stringify(res, null, 2)}\n`);
         } finally {
           process.removeListener('SIGINT', onSig);
