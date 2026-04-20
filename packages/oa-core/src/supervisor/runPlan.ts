@@ -731,6 +731,19 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
     throw new Error(`plan ${opts.planId} is not runnable (status=${sealed.status})`);
   }
 
+  // (1b) Fail-fast: if any task requests sandbox and we're not on macOS, throw
+  //      before any events are written, any worktrees are created, or the plan
+  //      status is flipped to 'running'. This keeps the run fully pristine so
+  //      the operator can fix the config and re-run without cleanup.
+  if (process.platform !== 'darwin') {
+    for (const tid of sealed.taskListIds) {
+      const intake = await loadIntake(taskDir(tid));
+      if (intake.sandbox?.enabled) {
+        throw new Error(`sandbox requested but unsupported on ${process.platform}`);
+      }
+    }
+  }
+
   // (2) Flip plan to 'running'.
   await plan.setStatus(opts.planId, 'running');
 

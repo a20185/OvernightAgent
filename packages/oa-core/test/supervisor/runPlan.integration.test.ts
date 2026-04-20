@@ -1260,4 +1260,37 @@ describe('runPlan integration (Task 7.3)', () => {
     const reread = await plan.get(sealed.id);
     expect(reread?.status).toBe('partial');
   });
+
+  // Task 5.5 — Fail-fast: sandbox requested on non-darwin throws before any
+  // events are written.
+  it('sandbox on non-darwin: throws before any events are written', async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+
+    try {
+      const f = await makeTaskFixture(REPO, REVIEWER_PROMPT, {
+        stepCount: 1,
+        sandboxEnabled: true,
+      });
+      const sealed = await plan.create({ taskListIds: [f.taskId] });
+
+      const worker = makeStubAdapter([{ stdoutBody: `done\n${OK_STATUS_BLOCK}\n` }]);
+      const reviewer = makeStubAdapter([{ stdoutBody: EMPTY_REVIEW_BLOCK }]);
+
+      await expect(
+        runPlan({
+          planId: sealed.id,
+          signal: new AbortController().signal,
+          workerAdapterFactory: () => worker,
+          reviewerAdapterFactory: () => reviewer,
+        }),
+      ).rejects.toThrow(/sandbox.*unsupported.*linux/i);
+
+      // No events.jsonl should exist — the fail-fast happens before any writes.
+      const eventsPath = path.resolve(runDir(sealed.id), 'events.jsonl');
+      await expect(fs.access(eventsPath)).rejects.toThrow();
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+    }
+  });
 });
