@@ -10,6 +10,7 @@ import { registerStatusCommand } from './commands/status.js';
 import { registerTailCommand } from './commands/tail.js';
 import { registerRerunCommand } from './commands/rerun.js';
 import { registerArchiveCommand } from './commands/archive.js';
+import { registerSummaryCommand } from './commands/summary.js';
 
 const program = new Command();
 
@@ -24,6 +25,7 @@ registerStatusCommand(program);
 registerTailCommand(program);
 registerRerunCommand(program);
 registerArchiveCommand(program);
+registerSummaryCommand(program);
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   const msg = err instanceof Error ? err.message : String(err);

@@ -209,6 +209,15 @@ export type { ResumePlanOpts, ResumePlanResult } from './supervisor/resume.js';
 // Phase 8 will open a client connection to the running daemon's socket and
 // send the appropriate JSON control message; `serve` is used internally by
 // runPlan only.
+// Events reader (Task 9.1). Streams and JSON-parses every line of
+// `<runDir>/events.jsonl`. Consumed by `oa status` fallback and the SUMMARY
+// renderer. Returns `[]` for missing files; malformed lines are logged to
+// stderr and skipped.
+export * as eventsReader from './events/reader.js';
+// SUMMARY.md renderer (Task 9.2). Pure function over parsed events —
+// composes the morning report: per-task outcome table, per-step status +
+// attempts, open P0/P1 issues, links to attempt-01 prompt/stdout.
+export * as summary from './summary/render.js';
 export * as controlSocket from './supervisor/controlSocket.js';
 export type {
   ControlRequest,

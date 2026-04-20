@@ -1052,6 +1052,21 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
       await new Promise<void>((resolve) => controlServer?.close(() => resolve())).catch(() => undefined);
     }
     await events?.close();
+
+    // Auto-render SUMMARY.md from events.jsonl. Best-effort: a render failure
+    // should never shadow the caller's outcome (and likewise must not mask the
+    // original throw in the outer catch). Writes to <runDir>/SUMMARY.md; CLI
+    // users can regenerate via `oa summary <planId>`.
+    try {
+      const { readAll } = await import('../events/reader.js');
+      const { renderSummary } = await import('../summary/render.js');
+      const eventsPath = opts.eventsPath ?? path.resolve(runDirAbs, 'events.jsonl');
+      const readEvents = await readAll({ absPath: eventsPath, onInvalid: () => undefined });
+      const md = renderSummary({ planId: opts.planId, events: readEvents });
+      await writeFileAtomic(path.resolve(runDirAbs, 'SUMMARY.md'), md);
+    } catch {
+      /* best-effort render; never hide the real outcome */
+    }
   }
 
   // Return.
