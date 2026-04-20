@@ -1,0 +1,51 @@
+; OvernightAgent sandbox-exec profile (reference template)
+; This file is NOT used at runtime — the template is inlined in render.ts.
+; Kept here for documentation and manual testing purposes.
+; See ADR-0016 for design rationale.
+
+(version 1)
+(deny default)
+
+; --- Process capabilities ---
+(allow process-exec)
+(allow process-fork)
+(allow signal (target self))
+
+; --- System read-only paths ---
+(allow file-read* (subpath "/usr"))
+(allow file-read* (subpath "/bin"))
+(allow file-read* (subpath "/Library"))
+(allow file-read* (subpath "/opt/homebrew"))
+(allow file-read* (subpath "/usr/local"))
+(allow file-read* (subpath "/private/tmp"))
+(allow file-read* (subpath "/private/var"))
+(allow file-read* (subpath "/dev"))
+(allow file-read* (subpath "/etc"))
+(allow file-read* (subpath "/var"))
+
+; --- Worktree: read + write ---
+(allow file-read* file-write* (subpath "{{WORKTREE}}"))
+
+; --- Temp directories: read + write ---
+(allow file-read* file-write* (subpath "/tmp"))
+(allow file-read* file-write* (subpath "/private/tmp"))
+
+; --- Home toolchain / config dirs: read-only ---
+(allow file-read* (subpath "{{HOME}}/.claude"))
+(allow file-read* (subpath "{{HOME}}/.npm-global"))
+(allow file-read* (subpath "{{HOME}}/.config"))
+(allow file-read* (subpath "{{HOME}}/.bun"))
+(allow file-read* (subpath "{{HOME}}/.nvm"))
+(allow file-read* (subpath "{{HOME}}/.cargo"))
+(allow file-read* (subpath "{{HOME}}/.rustup"))
+
+; --- Network ---
+(allow network-outbound (tcp "*:443"))
+
+; --- System entitlements ---
+(allow system-socket)
+(allow sysctl-read)
+(allow mach-lookup)
+
+; --- Extra allow paths ---
+{{EXTRA_ALLOWS}}
