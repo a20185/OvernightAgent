@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { z } from 'zod';
 
 /**
@@ -284,6 +285,22 @@ export const IntakeSchema = z.object({
   }),
   strategy: IntakeStrategySchema,
   references: z.array(ReferenceSchema),
+  // ADR-0016 — optional sandbox configuration. When present, the supervisor
+  // constrains the agent process (e.g. filesystem sandboxing). `extraAllowPaths`
+  // defaults to an empty array and every entry must be an absolute path.
+  sandbox: z
+    .object({
+      enabled: z.boolean(),
+      extraAllowPaths: z
+        .array(
+          z.string().refine((p) => path.isAbsolute(p), {
+            message: 'extraAllowPaths must be absolute',
+          }),
+        )
+        .optional()
+        .default([]),
+    })
+    .optional(),
 });
 
 // -----------------------------------------------------------------------------

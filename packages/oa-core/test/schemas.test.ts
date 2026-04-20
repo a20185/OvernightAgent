@@ -290,6 +290,61 @@ describe('IntakeSchema', () => {
     intake.references = [];
     expect(IntakeSchema.safeParse(intake).success).toBe(true);
   });
+
+  // --- sandbox field (Task 5.2 / ADR-0016) ---
+
+  it('parses legacy intake without sandbox field (sandbox: undefined)', () => {
+    const intake = validIntake();
+    expect(intake.sandbox).toBeUndefined();
+    const result = IntakeSchema.safeParse(intake);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.sandbox).toBeUndefined();
+    }
+  });
+
+  it('accepts sandbox: { enabled: true } with extraAllowPaths defaulting to []', () => {
+    const intake = validIntake();
+    intake.sandbox = { enabled: true };
+    const result = IntakeSchema.safeParse(intake);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.sandbox!.enabled).toBe(true);
+      expect(result.data.sandbox!.extraAllowPaths).toEqual([]);
+    }
+  });
+
+  it('accepts sandbox with absolute extraAllowPaths', () => {
+    const intake = validIntake();
+    intake.sandbox = { enabled: true, extraAllowPaths: ['/opt/data'] };
+    const result = IntakeSchema.safeParse(intake);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.sandbox!.extraAllowPaths).toEqual(['/opt/data']);
+    }
+  });
+
+  it('rejects sandbox with relative extraAllowPaths', () => {
+    const intake = validIntake();
+    intake.sandbox = { enabled: true, extraAllowPaths: ['relative'] };
+    const result = IntakeSchema.safeParse(intake);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(
+        result.error.issues.some((i) => /extraAllowPaths must be absolute/.test(i.message)),
+      ).toBe(true);
+    }
+  });
+
+  it('accepts sandbox: { enabled: false } (explicitly disabled)', () => {
+    const intake = validIntake();
+    intake.sandbox = { enabled: false };
+    const result = IntakeSchema.safeParse(intake);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.sandbox!.enabled).toBe(false);
+    }
+  });
 });
 
 // -----------------------------------------------------------------------------
