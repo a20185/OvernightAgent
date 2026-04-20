@@ -6,7 +6,7 @@ import { simpleGit } from 'simple-git';
 import { runPlan } from '../../src/supervisor/runPlan.js';
 import { ensureHomeLayout } from '../../src/home.js';
 import { writeFileAtomic, writeJsonAtomic } from '../../src/atomicJson.js';
-import { taskDir, runDir, socketPath } from '../../src/paths.js';
+import { taskDir, runDir, socketPath, worktreeDir } from '../../src/paths.js';
 import * as inbox from '../../src/stores/inbox.js';
 import * as plan from '../../src/stores/plan.js';
 import { request as controlRequest } from '../../src/supervisor/controlSocket.js';
@@ -932,5 +932,85 @@ describe('runPlan integration (Task 7.3)', () => {
 
     const progressMd = await fs.readFile(path.resolve(f.taskFolder, 'PROGRESS.md'), 'utf8');
     expect(progressMd).toMatch(/\| 1 \| pending \|/);
+  });
+
+  // Task 2.5 — .oa-current-prompt.md symlink is created in the worktree root
+  // after assemblePrompt writes the attempt prompt, and points to the correct
+  // attempt-NN/prompt.md path.
+  it('creates .oa-current-prompt.md symlink in worktree pointing to attempt prompt', async () => {
+    const f = await makeTaskFixture(REPO, REVIEWER_PROMPT, { stepCount: 1 });
+    const sealed = await plan.create({ taskListIds: [f.taskId] });
+
+    const worker = makeStubAdapter([
+      {
+        stdoutBody: `done\n${OK_STATUS_BLOCK}\n`,
+        sideEffect: (cwd) => commitWork(cwd, 'symlink-test'),
+      },
+    ]);
+    const reviewer = makeStubAdapter([{ stdoutBody: EMPTY_REVIEW_BLOCK }]);
+
+    const r = await runPlan({
+      planId: sealed.id,
+      signal: new AbortController().signal,
+      workerAdapterFactory: () => worker,
+      reviewerAdapterFactory: () => reviewer,
+    });
+
+    expect(r.outcome).toBe('done');
+
+    // The symlink must exist in the worktree root.
+    const wtRoot = worktreeDir(f.taskId);
+    const symlinkPath = path.resolve(wtRoot, '.oa-current-prompt.md');
+    const stat = await fs.lstat(symlinkPath);
+    expect(stat.isSymbolicLink()).toBe(true);
+
+    // readlink must return an absolute path ending with the expected attempt dir.
+    const linkTarget = await fs.readlink(symlinkPath);
+    expect(path.isAbsolute(linkTarget)).toBe(true);
+    expect(linkTarget).toMatch(/[/\\]1[/\\]prompt\.md$/);
+  });
+
+  // Task 2.5 — Symlink is updated across fix-loop attempts (attempt 1 → attempt 2).
+  it('updates .oa-current-prompt.md symlink across fix-loop attempts', async () => {
+    const f = await makeTaskFixture(REPO, REVIEWER_PROMPT, { stepCount: 1, maxLoops: 3 });
+    const sealed = await plan.create({ taskListIds: [f.taskId] });
+
+    const worker = makeStubAdapter([
+      {
+        stdoutBody: `attempt 1\n${OK_STATUS_BLOCK}\n`,
+        sideEffect: (cwd) => commitWork(cwd, 'a1'),
+      },
+      {
+        stdoutBody: `attempt 2 fixed\n${OK_STATUS_BLOCK}\n`,
+        sideEffect: (cwd) => commitWork(cwd, 'a2'),
+      },
+    ]);
+    const reviewer = makeStubAdapter([
+      {
+        stdoutBody: fence(
+          'oa-review',
+          JSON.stringify({
+            issues: [{ priority: 'P0', file: 'x.ts', finding: 'bad', suggestion: 'fix it' }],
+          }),
+        ),
+      },
+      { stdoutBody: EMPTY_REVIEW_BLOCK },
+    ]);
+
+    const r = await runPlan({
+      planId: sealed.id,
+      signal: new AbortController().signal,
+      workerAdapterFactory: () => worker,
+      reviewerAdapterFactory: () => reviewer,
+    });
+
+    expect(r.outcome).toBe('done');
+
+    // After a 2-attempt fix loop, the symlink must point at attempt-2.
+    const wtRoot = worktreeDir(f.taskId);
+    const symlinkPath = path.resolve(wtRoot, '.oa-current-prompt.md');
+    const linkTarget = await fs.readlink(symlinkPath);
+    expect(path.isAbsolute(linkTarget)).toBe(true);
+    expect(linkTarget).toMatch(/[/\\]2[/\\]prompt\.md$/);
   });
 });

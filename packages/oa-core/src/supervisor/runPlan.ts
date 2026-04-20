@@ -340,6 +340,14 @@ async function runStep(
       isRetry: attempt > 1,
     });
     await writeFileAtomic(promptPath, promptText);
+
+    // Task 2.5 (ADR-0015): maintain .oa-current-prompt.md symlink in the
+    // worktree root. The compact-recovery hook reads this to recover context
+    // after Claude Code auto-compaction. Absolute paths throughout.
+    const symlinkPath = path.resolve(worktreeInfo.absRoot, '.oa-current-prompt.md');
+    await fs.rm(symlinkPath, { force: true });
+    await fs.symlink(promptPath, symlinkPath);
+
     await events.emit({
       kind: 'step.prompt.written',
       taskId,

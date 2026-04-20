@@ -226,6 +226,9 @@ export async function resumePlan(opts: ResumePlanOpts): Promise<RunPlanResult> {
     const absRoot = worktreeDir(t.taskId);
     if (await worktreeExists(absRoot)) {
       await worktree.rewindToHead(absRoot);
+      // Task 2.5 (ADR-0015): remove stale .oa-current-prompt.md symlink so
+      // the post-compact hook doesn't read a prompt from the prior attempt.
+      await fs.rm(path.resolve(absRoot, '.oa-current-prompt.md'), { force: true });
     }
     for (const stepN of t.runningStepNs) {
       // progress.mark preserves `attempt` across calls; we're writing
