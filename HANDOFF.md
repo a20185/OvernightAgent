@@ -1,10 +1,10 @@
 # OvernightAgent — Session Handoff
 
-**Final checkpoint commit:** `19525e7` (Phase 12 — docs + e2e + ADR alignment)
-**Post-v0 release prep:** scope rename + cycle break + bundled shims (ADR-0014).
+**Final checkpoint commit:** v0.2.0 hardening (ADR-0015 + ADR-0016)
+**Post-v0.1 release prep:** scope rename + cycle break + bundled shims (ADR-0014).
 **Branch:** `main`
-**Status:** All 64 sub-tasks across Phases 0–12 complete. v0.1.0 ready for npm publish.
-**Verification:** `pnpm -r typecheck && pnpm -r lint && pnpm -r build && pnpm -r test` all green — 435 tests across 5 packages.
+**Status:** All 64 sub-tasks across Phases 0–12 plus v0.2 hardening features complete. v0.2.0 ready for npm publish.
+**Verification:** `pnpm -r typecheck && pnpm -r lint && pnpm -r build && pnpm -r test` all green — 488 tests across 5 packages.
 
 ---
 
@@ -16,9 +16,11 @@ plans. Every task runs in an isolated git worktree with a four-gate verify
 pipeline, review-fix loop, structured event logs, clean resume after
 interruption, and a morning SUMMARY.md.
 
-Design + 13 ADRs are at `docs/plans/2026-04-18-overnight-agent-taskmanager-design.md`
+Design + 16 ADRs are at `docs/plans/2026-04-18-overnight-agent-taskmanager-design.md`
 and `docs/adr/`. Implementation plan is at
 `docs/plans/2026-04-18-overnight-agent-taskmanager-implementation.md`.
+ADR-0015 covers harness hardening (compact-recovery hook, stall detection,
+error budget). ADR-0016 covers macOS sandbox-exec isolation.
 
 ---
 
@@ -48,7 +50,7 @@ and `docs/adr/`. Implementation plan is at
 - `intake submit|list|show|rm`
 - `queue add|ls|rm|clear`
 - `plan create|show|ls`
-- `run [planId] [--detach] [--dry-run]`
+- `run [planId] [--detach] [--dry-run] [--sandbox]`
 - `stop [planId] [--now]`
 - `status [planId] [--json]`
 - `tail [planId] [--raw] [--once]`
@@ -80,12 +82,24 @@ there to host-specific target dirs at user install time. ADR-0014.
 
 ---
 
+## v0.2 hardening features (ADR-0015 + ADR-0016)
+
+| Feature | Location | What |
+|---|---|---|
+| Compact-recovery hook | `packages/oa-shims/claude/hooks/` | `SessionStart[compact]` hook re-injects task context after Claude Code auto-compaction; installed via sentinel-based merge into `.claude/settings.json` |
+| Stall detection | `oa-core/src/supervisor/runPlan.ts` | Soft/hard attempt thresholds; `step.stall` event fires once per step at soft boundary; stall warning injected into prompt |
+| Error budget | `oa-core/src/supervisor/runPlan.ts` | `PlanSchema.errorBudget` with `warnAfter` / `stopAfter`; emits `plan.budget.warn` + `plan.budget.exhausted` events; skips remaining tasks on exhaustion |
+| Sandbox-exec | `oa-core/src/sandbox/` | Seatbelt profile template + renderer; wraps adapter argv via `spawnHeadless` on macOS; `oa run --sandbox` flag; fail-fast on non-macOS |
+| Env vars | `oa-core/src/supervisor/runPlan.ts` | `OA_TASK_DIR` + `OA_CURRENT_PROMPT` set per adapter spawn for compact-recovery hook |
+
+---
+
 ## Quick verify
 
 ```sh
 cd /Users/souler/Nextcloud/test/OvernightAgent
 pnpm install
-pnpm -r build && pnpm -r test        # 435 tests, all green
+pnpm -r build && pnpm -r test        # 488 tests, all green
 node packages/oa-cli/dist/cli.js --help
 pnpm release:dry-run                 # see what would be published
 ```
@@ -120,5 +134,5 @@ pnpm release:dry-run                 # see what would be published
 - `feedback_worktree_absolute_paths.md` — every worktree-touching code path
   asserts absolute paths, ESLint enforced. Paid off three times during
   implementation.
-- `feedback_record_adrs.md` — 13 ADRs total; reviewers consistently
+- `feedback_record_adrs.md` — 16 ADRs total; reviewers consistently
   cross-check ADR text against implementation.

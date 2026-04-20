@@ -5,7 +5,7 @@
 [![Node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/typescript-6.x-blue)](https://www.typescriptlang.org/)
 [![pnpm](https://img.shields.io/badge/pnpm-9.x-orange)](https://pnpm.io/)
-[![Tests](https://img.shields.io/badge/tests-435%20passing-success)](#development)
+[![Tests](https://img.shields.io/badge/tests-488%20passing-success)](#development)
 [![Status](https://img.shields.io/badge/status-v0-lightgrey)](#status--v0)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -71,7 +71,7 @@ less great at 8-hour queues where:
   verify command → AI reviewer. Any gate fails → fix-loop or mark blocked.
 - **Fix-loop with context injection.** Reviewer findings are spliced into
   the next attempt's prompt, so the agent sees exactly what to address.
-- **Structured event stream.** `runs/<planId>/events.jsonl` with 28 typed
+- **Structured event stream.** `runs/<planId>/events.jsonl` with 31 typed
   event kinds (Zod-validated via `EventSchema`). One line per event,
   append-only, `O_APPEND`-atomic.
 - **Clean resume.** Detect stale pidfile → rewind in-flight worktrees →
@@ -87,6 +87,21 @@ less great at 8-hour queues where:
   JSON, single-writer convention per per-task state file.
 - **Morning report.** Auto-rendered `SUMMARY.md` per run — task outcomes,
   step tables, open P0/P1 issues, links to per-attempt prompts and logs.
+- **Compact-recovery hook.** When Claude Code auto-compacts a session,
+  a `SessionStart[compact]` hook re-injects the task context
+  (`PROGRESS.md`, current prompt, step pointer) so the agent resumes
+  without losing its place. Installed automatically by
+  `oa shims install` (ADR-0015).
+- **Stall detection.** Soft/hard attempt thresholds give operators an early
+  warning before a step exhausts its budget, and inject a P0-styled stall
+  warning into the agent's prompt so it can self-correct or escalate.
+- **Error budget.** Optional plan-level circuit-breaker (`warnAfter` /
+  `stopAfter`) that stops scheduling tasks once too many steps are blocked,
+  preventing systematic failures from wasting compute.
+- **Sandbox-exec isolation.** On macOS, `oa run --sandbox` wraps each
+  adapter subprocess in a `sandbox-exec` Seatbelt profile — kernel-level
+  filesystem confinement that prevents the agent from reading secrets or
+  writing outside the worktree. Opt-in for v0.2 (ADR-0016).
 - **Multi-agent.** One CLI, three executors. Pick your executor + reviewer
   independently per task; mix claude-opus for the hard parts and
   codex/opencode for the grind.
@@ -241,7 +256,7 @@ step lands `done`, hits the attempt budget, or is marked blocked:
 | `oa queue ls` &nbsp;·&nbsp; `rm <id>` &nbsp;·&nbsp; `clear` | Manage the queue |
 | `oa plan create [--from-queue\|--tasks <ids>] [--budget <s>] [--parallel <n>]` | Seal a plan |
 | `oa plan show <planId>` &nbsp;·&nbsp; `ls` | Inspect plans |
-| `oa run [planId] [--detach] [--dry-run]` | Run foreground or daemon; or print ordering |
+| `oa run [planId] [--detach] [--dry-run] [--sandbox]` | Run foreground or daemon; or print ordering; `--sandbox` wraps adapter spawns in macOS sandbox-exec |
 | `oa stop [planId] [--now]` | Graceful stop (or force with `--now`); socket → pidfile fallback |
 | `oa status [planId] [--json]` | Live snapshot from the control socket, or events-derived |
 | `oa tail [planId] [--raw] [--once]` | Follow `events.jsonl` (pretty or verbatim) |
@@ -287,6 +302,15 @@ $OA_HOME/
 Every JSON file carries `schemaVersion: 1`. Every write is `writeFileAtomic`
 (temp + rename). Schemas are Zod, `.strict()` for closed shapes.
 
+**Environment variables set by the supervisor per adapter spawn:**
+
+| Variable | Purpose |
+|---|---|
+| `OA_HOME` | State root (default `$HOME/.oa/`). Override to isolate test runs. |
+| `OA_TASK_DIR` | Absolute path to the current task's directory under `$OA_HOME/tasks/<taskId>/`. Used by compact-recovery hook to re-read `PROGRESS.md`. |
+| `OA_CURRENT_PROMPT` | Absolute path to the current attempt's `prompt.md`. Used by compact-recovery hook to re-inject the full prompt after compaction. |
+| `OA_RESUME` | Set to `1` when the supervisor entry is invoked in resume mode (`oa rerun`). |
+
 ---
 
 ## Architecture
@@ -316,7 +340,7 @@ Everything interesting was argued out in writing before it was coded:
 
 - [**Design doc**](docs/plans/2026-04-18-overnight-agent-taskmanager-design.md) — full §1–§8 system design
 - [**Implementation plan**](docs/plans/2026-04-18-overnight-agent-taskmanager-implementation.md) — the 13-phase roadmap this repo was built against
-- [**ADRs 0001–0014**](docs/adr/) — every major decision with context + alternatives:
+- [**ADRs 0001–0016**](docs/adr/) — every major decision with context + alternatives:
 
 | ADR | Topic |
 |---|---|
@@ -334,6 +358,8 @@ Everything interesting was argued out in writing before it was coded:
 | 0012 | Daemon control via Unix socket |
 | 0013 | ESLint path-discipline enforcement gaps |
 | 0014 | Scoped npm publish, cycle break, bundled shims |
+| 0015 | Harness hardening: compact-recovery hook, stall detection, error budget |
+| 0016 | macOS sandbox-exec profile around adapter runs |
 
 ---
 
@@ -341,7 +367,7 @@ Everything interesting was argued out in writing before it was coded:
 
 ```sh
 pnpm -r build        # compile every package (oa-cli also bundles shims)
-pnpm -r test         # vitest — 435 tests across 5 packages
+pnpm -r test         # vitest — 488 tests across 5 packages
 pnpm -r lint         # eslint
 pnpm -r typecheck    # tsc --noEmit
 ```
@@ -383,10 +409,22 @@ pnpm refuses to publish from a dirty working tree; commit first. The scope
 
 ---
 
-## Status — v0
+## Status — v0.2
 
-All 64 sub-tasks across Phases 0–12 are complete; 435 tests pass.
+All 64 sub-tasks across Phases 0–12 plus v0.2 hardening features are
+complete; 488 tests pass.
 Published to npm under `@soulerou` (see [ADR-0014](docs/adr/0014-scoped-publish-and-bundled-shims.md)).
+
+**v0.2 adds** (see [ADR-0015](docs/adr/0015-harness-hardening-post-compact-stall-budget.md) +
+[ADR-0016](docs/adr/0016-macos-sandbox-exec-profile.md)):
+
+- Compact-recovery hook for Claude Code (auto-re-injects context after compaction)
+- Stall detection with soft/hard attempt thresholds + `step.stall` event
+- Plan-level error budget (`warnAfter` / `stopAfter`) with `plan.budget.warn` +
+  `plan.budget.exhausted` events
+- `skipped` task status for budget-exhausted tasks
+- macOS sandbox-exec isolation (`oa run --sandbox`)
+- Supervisor-set env vars `OA_TASK_DIR` + `OA_CURRENT_PROMPT` per adapter spawn
 
 **Known v0 limits** (slated for post-v0 follow-up):
 

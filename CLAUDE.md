@@ -13,7 +13,7 @@ All commands run from repo root unless noted.
 ```sh
 pnpm install
 pnpm -r build                       # compile every package (oa-cli also bundles shims)
-pnpm -r test                        # vitest run, all packages (~435 tests)
+pnpm -r test                        # vitest run, all packages (~488 tests)
 pnpm -r lint                        # eslint src + test
 pnpm -r typecheck                   # tsc -p . --noEmit
 
@@ -43,16 +43,20 @@ Verification gate before claiming a phase done: `pnpm -r typecheck && pnpm -r li
 
 | Package | What lives there |
 |---|---|
-| `packages/oa-core` → `@soulerou/oa-core` | Schemas (Zod), paths/home/ids, atomic JSON, worktree manager, intake parser, adapter registry, verify pipeline, fix-loop, events reader/writer, supervisor (`runPlan`/`resumePlan`), daemon launcher, pidfile, control socket, SUMMARY renderer |
+| `packages/oa-core` → `@soulerou/oa-core` | Schemas (Zod), paths/home/ids, atomic JSON, worktree manager, intake parser, adapter registry, verify pipeline, fix-loop, events reader/writer, supervisor (`runPlan`/`resumePlan`), daemon launcher, pidfile, control socket, SUMMARY renderer, sandbox profile renderer, stall detection, error budget |
 | `packages/oa-cli` → `@soulerou/oa-cli` | Commander CLI; every subcommand is a thin wrapper around a `@soulerou/oa-core` API. Entry: `src/cli.ts`. Also bundles the host-agent shims into `dist/shims/` via `scripts/bundle-shims.mjs` at build time, and exposes them at install time via `oa shims install`. |
 | `packages/oa-adapter-{claude,codex,opencode}` → `@soulerou/oa-adapter-*` | Headless adapters implementing the `AgentAdapter` interface (ADR-0009). |
-| `packages/oa-shims/{claude,codex,opencode}/{commands,skills}/` | **Pure markdown** slash-command + skill resource files for each host. Source of what `@soulerou/oa-cli` bundles. Not published as separate packages (ADR-0014). |
+| `packages/oa-shims/{claude,codex,opencode}/{commands,skills}/` | **Pure markdown** slash-command + skill resource files for each host. Source of what `@soulerou/oa-cli` bundles. The `claude` host also ships a `hooks/compact-recovery.json` fragment installed via sentinel-based merge into `.claude/settings.json` (ADR-0015). Not published as separate packages (ADR-0014). |
 
-**Supervisor flow** lives in `oa-core/src/supervisor/` — `bootstrap.ts` → `runPlan.ts` / `resume.ts` → `daemon.ts` → `entry.ts` (checks `OA_RESUME=1` to branch into `resumePlan`) → `pidfile.ts` + `controlSocket.ts`. Adapters are resolved via a **lazy registry** in `oa-core/src/adapter/registry.ts` — dynamic `import('@soulerou/oa-adapter-<id>')`. `oa-core`'s test mocks the adapter packages via `vi.mock` so there's no workspace devDep cycle (ADR-0014).
+**Supervisor flow** lives in `oa-core/src/supervisor/` — `bootstrap.ts` → `runPlan.ts` / `resume.ts` → `daemon.ts` → `entry.ts` (checks `OA_RESUME=1` to branch into `resumePlan`) → `pidfile.ts` + `controlSocket.ts`. Before each adapter spawn, the supervisor sets `OA_TASK_DIR` and `OA_CURRENT_PROMPT` env vars so the compact-recovery hook (ADR-0015) can re-inject context after a Claude Code compaction. Adapters are resolved via a **lazy registry** in `oa-core/src/adapter/registry.ts` — dynamic `import('@soulerou/oa-adapter-<id>')`. `oa-core`'s test mocks the adapter packages via `vi.mock` so there's no workspace devDep cycle (ADR-0014).
+
+**Sandbox subsystem** lives in `oa-core/src/sandbox/` — a Seatbelt profile template + `render.ts` that interpolates per-attempt paths. When `oa run --sandbox` is set and `process.platform === 'darwin'`, `spawnHeadless` prepends `sandbox-exec -f <profile>` to the adapter argv. Non-macOS platforms fail fast (ADR-0016).
+
+**Stall detection + error budget.** `VerifyConfig.attempts` accepts `{ soft, hard }` for graduated thresholds (ADR-0015). At the soft boundary, a `step.stall` event fires once per step and a stall warning is injected into the prompt. `PlanSchema.errorBudget` adds plan-level `warnAfter` / `stopAfter` gates that emit `plan.budget.warn` / `plan.budget.exhausted` events and skip remaining tasks on exhaustion.
 
 **State root** is `$OA_HOME` (default `$HOME/.oa/`). All per-task, per-plan, per-run state lives under there — see the "State layout" tree in README. Every JSON shape carries `schemaVersion: 1` and is written via `writeJsonAtomic` / `writeFileAtomic` (temp + rename).
 
-**Event stream** (`runs/<planId>/events.jsonl`) is the single source of truth for what happened — SUMMARY.md is rendered from it, `oa status` reads it when the socket is down, and `oa tail` follows it live. 28 typed event kinds, Zod-validated via `EventSchema`.
+**Event stream** (`runs/<planId>/events.jsonl`) is the single source of truth for what happened — SUMMARY.md is rendered from it, `oa status` reads it when the socket is down, and `oa tail` follows it live. 31 typed event kinds (v0.2 added `step.stall`, `plan.budget.warn`, `plan.budget.exhausted`), Zod-validated via `EventSchema`.
 
 ## House rules (enforced, not optional)
 
@@ -61,7 +65,7 @@ Verification gate before claiming a phase done: `pnpm -r typecheck && pnpm -r li
 - **`verbatimModuleSyntax` + `module: NodeNext`.** Relative imports inside `src/` must spell the `.js` extension even though the file on disk is `.ts`. E.g. `import { foo } from './bar.js'`.
 - **`tsc --build . --force`** (not `tsc -p . --force`) for forced rebuilds — several packages run this via `pretest` to defeat stale incremental state.
 - **TDD per task.** Failing test → minimal impl → passing test → single commit. For load-bearing assertions, sabotage-check: break the prod code, confirm the test goes red, restore.
-- **ADRs are load-bearing.** When changing behavior in an area with an ADR, cross-check the ADR and update it (or add a new one) in the same change. Memory entry: `feedback_record_adrs.md`. 14 ADRs live in `docs/adr/`.
+- **ADRs are load-bearing.** When changing behavior in an area with an ADR, cross-check the ADR and update it (or add a new one) in the same change. Memory entry: `feedback_record_adrs.md`. 16 ADRs live in `docs/adr/`.
 - **Schemas are `.strict()`** for closed shapes — extra fields are a test failure, not a silent pass.
 
 ## Testing conventions
@@ -84,4 +88,4 @@ Verification gate before claiming a phase done: `pnpm -r typecheck && pnpm -r li
 - `HANDOFF.md` / `PROGRESS.md` — session audit trail; phase-by-phase completion.
 - `docs/plans/2026-04-18-overnight-agent-taskmanager-design.md` — full §1–§8 system design.
 - `docs/plans/2026-04-18-overnight-agent-taskmanager-implementation.md` — the 13-phase roadmap this repo was built against.
-- `docs/adr/0001`–`0014` — every major decision with context + alternatives. ADR-0014 is the publish + shim-bundling decision.
+- `docs/adr/0001`–`0016` — every major decision with context + alternatives. ADR-0014 is the publish + shim-bundling decision. ADR-0015 covers harness hardening (compact-recovery, stall detection, error budget). ADR-0016 covers macOS sandbox-exec.
