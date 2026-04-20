@@ -54,6 +54,9 @@ export {
   // Sub-schemas + enums Phase 3+ writers will want to compose with (S2).
   ReviewFixLoopSchema,
   ParallelSchema,
+  // ADR-0015 stall detection: soft/hard attempt thresholds (Task 3.1).
+  VerifyConfigSchema,
+  AttemptsSchema,
   TaskStatus,
   PlanStatus,
   StepStatus,
@@ -96,6 +99,7 @@ export type {
   OaReviewIssue,
   StepProgress,
   ProgressDoc,
+  Attempts,
 } from './schemas.js';
 // Tail-message parser (ADR-0008, Task 6.1). Pure function: extract the LAST
 // fenced ```oa-status / ```oa-review block, JSON-parse, validate. Consumed by

@@ -93,6 +93,41 @@ export const ParallelSchema = z.object({
   max: z.number().int().positive(),
 });
 
+// -----------------------------------------------------------------------------
+// ADR-0015 — Stall detection: soft/hard attempt thresholds.
+// `AttemptsSchema` accepts either a bare positive integer (normalized at parse
+// time to `{ soft, hard }`) or an explicit `{ soft, hard }` object. The
+// normalization mirrors the 0.6× heuristic from the NightShift design: bare `N`
+// maps to `soft = max(1, ceil(N*0.6)), hard = N` when N ≥ 2; N ≤ 1 maps to
+// `{ soft: N, hard: N }` (single-attempt mode — no stall detection possible).
+// The `soft < hard` invariant is enforced at the Zod level so the supervisor
+// never sees `soft >= hard`.
+// -----------------------------------------------------------------------------
+
+export const AttemptsSchema = z
+  .union([
+    z.number().int().positive(),
+    z
+      .object({
+        soft: z.number().int().positive(),
+        hard: z.number().int().positive(),
+      })
+      .refine((o) => o.soft < o.hard, { message: 'soft must be < hard' }),
+  ])
+  .transform((raw) => {
+    if (typeof raw === 'number') {
+      if (raw <= 1) return { soft: raw, hard: raw };
+      return { soft: Math.max(1, Math.ceil(raw * 0.6)), hard: raw };
+    }
+    return raw;
+  });
+
+export type Attempts = { soft: number; hard: number };
+
+export const VerifyConfigSchema = z.object({
+  attempts: AttemptsSchema,
+});
+
 // `references.strict` is documented in §3.1 but left to phase 4 to define
 // further fields — keep this tolerant.
 const ReferencesPolicySchema = z.object({

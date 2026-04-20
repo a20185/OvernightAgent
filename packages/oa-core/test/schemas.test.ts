@@ -9,6 +9,7 @@ import {
   EventSchema,
   IdSchema,
   ID_REGEX,
+  VerifyConfigSchema,
 } from '../src/schemas.js';
 import { DEFAULT_CONFIG } from '../src/home.js';
 
@@ -556,5 +557,32 @@ describe('EventSchema', () => {
       const result = EventSchema.safeParse(ev);
       expect(result.success, `expected ${kind} to reject`).toBe(false);
     }
+  });
+});
+
+// -----------------------------------------------------------------------------
+// VerifyConfigSchema — attempts field with soft/hard thresholds
+// -----------------------------------------------------------------------------
+
+describe('VerifyConfigSchema', () => {
+  it('accepts a bare number and normalizes soft=ceil(n*0.6), hard=n', () => {
+    const parsed = VerifyConfigSchema.parse({ attempts: 5 });
+    expect(parsed.attempts).toEqual({ soft: 3, hard: 5 });
+  });
+
+  it('accepts explicit {soft, hard} and preserves it', () => {
+    const parsed = VerifyConfigSchema.parse({ attempts: { soft: 2, hard: 7 } });
+    expect(parsed.attempts).toEqual({ soft: 2, hard: 7 });
+  });
+
+  it('rejects soft >= hard in explicit form', () => {
+    expect(() => VerifyConfigSchema.parse({ attempts: { soft: 5, hard: 5 } })).toThrow(
+      /soft must be < hard/,
+    );
+  });
+
+  it('when hard = 1, keeps soft = 1 (no warning possible)', () => {
+    const parsed = VerifyConfigSchema.parse({ attempts: 1 });
+    expect(parsed.attempts).toEqual({ soft: 1, hard: 1 });
   });
 });
