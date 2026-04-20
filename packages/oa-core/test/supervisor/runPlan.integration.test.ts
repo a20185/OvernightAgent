@@ -1068,4 +1068,99 @@ describe('runPlan integration (Task 7.3)', () => {
     expect(path.isAbsolute(linkTarget)).toBe(true);
     expect(linkTarget).toMatch(/[/\\]2[/\\]prompt\.md$/);
   });
+
+  // Task 4.4 — Error budget: 3 tasks, all blocked. warnAfter=1, stopAfter=2.
+  // Tasks 1 + 2 run and block; plan.budget.warn fires at blockedCount=1,
+  // plan.budget.exhausted fires at blockedCount=2, task 3 is skipped (no
+  // task.start/task.end events). Plan ends 'partial'.
+  it('error budget: warnAfter=1, stopAfter=2 -> tasks 1+2 block, task 3 skipped, plan partial', async () => {
+    const f1 = await makeTaskFixture(REPO, REVIEWER_PROMPT, { stepCount: 1 });
+    const f2 = await makeTaskFixture(REPO, REVIEWER_PROMPT, { stepCount: 1 });
+    const f3 = await makeTaskFixture(REPO, REVIEWER_PROMPT, { stepCount: 1 });
+    const sealed = await plan.create({
+      taskListIds: [f1.taskId, f2.taskId, f3.taskId],
+      errorBudget: { warnAfter: 1, stopAfter: 2 },
+    });
+
+    // Worker emits a 'done' status block but never commits -> commit gate fails
+    // -> step ends 'blocked' -> task ends 'blocked-needs-human'.
+    const worker = makeStubAdapter([{ stdoutBody: `claimed done\n${OK_STATUS_BLOCK}\n` }]);
+    const reviewer = makeStubAdapter([{ stdoutBody: EMPTY_REVIEW_BLOCK }]);
+
+    const r = await runPlan({
+      planId: sealed.id,
+      signal: new AbortController().signal,
+      workerAdapterFactory: () => worker,
+      reviewerAdapterFactory: () => reviewer,
+    });
+
+    // Plan outcome is 'partial' (not all done, not stopped, not budget-exhausted).
+    expect(r.outcome).toBe('partial');
+
+    // Only tasks 1 + 2 ran; task 3 was skipped before it started.
+    expect(r.taskOutcomes).toHaveLength(2);
+    expect(r.taskOutcomes[0]).toEqual({
+      taskId: f1.taskId,
+      outcome: 'blocked-needs-human',
+      stepsRun: 1,
+    });
+    expect(r.taskOutcomes[1]).toEqual({
+      taskId: f2.taskId,
+      outcome: 'blocked-needs-human',
+      stepsRun: 1,
+    });
+
+    // Worker called twice (once per task 1 and 2), reviewer never called.
+    expect(worker.callCount()).toBe(2);
+    expect(reviewer.callCount()).toBe(0);
+
+    const events = await readEvents(sealed.id);
+    const kinds = events.map((e) => e.kind);
+
+    // task.start fires exactly twice (tasks 1 + 2).
+    expect(kinds.filter((k) => k === 'task.start')).toHaveLength(2);
+    // task.end fires exactly twice (tasks 1 + 2).
+    expect(kinds.filter((k) => k === 'task.end')).toHaveLength(2);
+    // task 3 never started — no task.start for it.
+    expect(kinds.filter((k) => k === 'task.start')).toHaveLength(2);
+
+    // step.end(blocked) fires for both tasks' single steps.
+    const stepEnds = events.filter((e) => e.kind === 'step.end');
+    expect(stepEnds).toHaveLength(2);
+    expect(stepEnds.every((e) => (e as { status?: string }).status === 'blocked')).toBe(true);
+
+    // plan.budget.warn fires once (blockedCount=1, threshold=1).
+    const warnEvents = events.filter((e) => e.kind === 'plan.budget.warn');
+    expect(warnEvents).toHaveLength(1);
+    expect(warnEvents[0]).toMatchObject({
+      kind: 'plan.budget.warn',
+      blockedCount: 1,
+      threshold: 1,
+    });
+
+    // plan.budget.exhausted fires once (blockedCount=2, threshold=2).
+    const exhaustedEvents = events.filter((e) => e.kind === 'plan.budget.exhausted');
+    expect(exhaustedEvents).toHaveLength(1);
+    expect(exhaustedEvents[0]).toMatchObject({
+      kind: 'plan.budget.exhausted',
+      blockedCount: 2,
+      threshold: 2,
+    });
+
+    // run.stop reason is 'budget'.
+    const runStop = events.find((e) => e.kind === 'run.stop') as { reason?: string } | undefined;
+    expect(runStop?.reason).toBe('budget');
+
+    // Inbox: tasks 1 + 2 are blocked-needs-human, task 3 is skipped.
+    const t1 = await inbox.get(f1.taskId);
+    expect(t1?.status).toBe('blocked-needs-human');
+    const t2 = await inbox.get(f2.taskId);
+    expect(t2?.status).toBe('blocked-needs-human');
+    const t3 = await inbox.get(f3.taskId);
+    expect(t3?.status).toBe('skipped');
+
+    // Plan status is 'partial'.
+    const reread = await plan.get(sealed.id);
+    expect(reread?.status).toBe('partial');
+  });
 });

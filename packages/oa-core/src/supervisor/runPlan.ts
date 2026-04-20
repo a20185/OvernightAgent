@@ -28,6 +28,7 @@ import { synthesizeFixContext } from '../verify/fixLoop.js';
 import { parseTail } from '../verify/tail.js';
 import { runBootstrap } from './bootstrap.js';
 import { openEventWriter, type EventWriter } from '../events/writer.js';
+import { readAll } from '../events/reader.js';
 import { getAdapter } from '../adapter/registry.js';
 import { serve } from './controlSocket.js';
 import type { AgentAdapter, AgentRunControl } from '../adapter/types.js';
@@ -764,8 +765,22 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
     runtime.budgetDeadlineMs = budgetDeadline;
     const isBudgetExhausted = (): boolean => Date.now() >= budgetDeadline;
 
+    // (6b) ADR-0015 — Error budget (graduated blocked-task counter). Scan the
+    //      existing events.jsonl for pre-existing `step.end(status: 'blocked')`
+    //      events so the count is durable across `oa rerun` / resume. The budget
+    //      is read from `sealed.errorBudget`; if absent, no enforcement.
+    const errorBudget = sealed.errorBudget;
+    let blockedCount = 0;
+    {
+      const existing = await readAll({ absPath: eventsPath, onInvalid: () => undefined });
+      blockedCount = existing.filter(
+        (e) => e.kind === 'step.end' && (e as { status?: string }).status === 'blocked',
+      ).length;
+    }
+
     // (7) Per-task outer loop.
     let halted = false;
+    let budgetExhausted = false;
     let abortedReason: 'user' | 'budget' | 'completed' = 'completed';
 
     for (const taskId of sealed.taskListIds) {
@@ -1039,6 +1054,40 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
       runtime.currentStepStartedAt = null;
       runtime.currentAttempt = null;
 
+      // ADR-0015 — Error budget accounting. After each task, if the task
+      // ended as blocked-needs-human, increment blockedCount and check the
+      // graduated thresholds. warnAfter emits a one-time warning; stopAfter
+      // breaks the loop and marks remaining tasks as 'skipped'.
+      if (taskOutcome === 'blocked-needs-human') {
+        blockedCount += 1;
+        if (
+          errorBudget !== undefined &&
+          errorBudget.warnAfter !== undefined &&
+          blockedCount === errorBudget.warnAfter
+        ) {
+          await events.emit({
+            kind: 'plan.budget.warn',
+            blockedCount,
+            threshold: errorBudget.warnAfter,
+          });
+        }
+        if (
+          errorBudget !== undefined &&
+          errorBudget.stopAfter !== undefined &&
+          blockedCount >= errorBudget.stopAfter
+        ) {
+          await events.emit({
+            kind: 'plan.budget.exhausted',
+            blockedCount,
+            threshold: errorBudget.stopAfter,
+          });
+          budgetExhausted = true;
+          abortedReason = 'budget';
+          halted = true;
+          break;
+        }
+      }
+
       if (taskHaltedByStep) break;
       // taskBlockedByStep does NOT halt the plan as a whole — onFailure
       // policy at the *plan* level decides cross-task continuation. We only
@@ -1047,11 +1096,26 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
       if (halted) break;
     }
 
+    // (7b) ADR-0015 — After error-budget exhaustion, mark remaining pending tasks
+    //      as 'skipped'. Do NOT emit synthetic task.start/task.end events — the
+    //      plan.budget.exhausted event already carries the signal. Only tasks that
+    //      were never started (i.e. don't appear in taskOutcomes) get skipped.
+    if (budgetExhausted) {
+      const completedTaskIds = new Set(taskOutcomes.map((t) => t.taskId));
+      for (const tid of sealed.taskListIds) {
+        if (!completedTaskIds.has(tid)) {
+          await inbox.setStatus(tid, 'skipped');
+        }
+      }
+    }
+
     // (8) run.stop. Reason precedence: budget > user > completed.
     await events.emit({ kind: 'run.stop', reason: abortedReason });
 
-    // (9) Plan terminal status.
-    if (abortedReason === 'budget') planOutcome = 'budget-exhausted';
+    // (9) Plan terminal status. Error-budget exhaustion maps to 'partial'
+    //     (distinguished from wall-clock budget-exhausted by the
+    //     plan.budget.exhausted event in events.jsonl).
+    if (abortedReason === 'budget' && !budgetExhausted) planOutcome = 'budget-exhausted';
     else if (abortedReason === 'user') planOutcome = 'stopped';
     else if (taskOutcomes.every((t) => t.outcome === 'done')) planOutcome = 'done';
     else planOutcome = 'partial';

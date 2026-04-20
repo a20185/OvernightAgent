@@ -110,6 +110,8 @@ async function readInboxRaw(): Promise<Inbox> {
 export interface CreatePlanOpts {
   taskListIds: string[];
   overrides?: Plan['overrides'];
+  /** ADR-0015 error budget. Omit for no budget enforcement. */
+  errorBudget?: Plan['errorBudget'];
 }
 
 /**
@@ -158,6 +160,7 @@ export async function create(opts: CreatePlanOpts): Promise<Plan> {
     status: 'sealed',
     taskListIds: [...opts.taskListIds],
     overrides: opts.overrides ?? {},
+    ...(opts.errorBudget !== undefined ? { errorBudget: opts.errorBudget } : {}),
   };
 
   await withInboxLock(async () => {
