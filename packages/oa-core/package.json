@@ -1,8 +1,17 @@
 {
   "name": "@soulerou/oa-core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Core engine for OvernightAgent — schemas, worktree manager, four-gate verify pipeline, supervisor, events, and SUMMARY renderer.",
-  "keywords": ["overnight-agent", "oa", "agent", "supervisor", "worktree", "claude", "codex", "opencode"],
+  "keywords": [
+    "overnight-agent",
+    "oa",
+    "agent",
+    "supervisor",
+    "worktree",
+    "claude",
+    "codex",
+    "opencode"
+  ],
   "author": "Souler Ou",
   "license": "MIT",
   "homepage": "https://github.com/a20185/OvernightAgent#readme",
@@ -17,7 +26,11 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "publishConfig": {
     "access": "public"
   },

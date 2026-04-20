@@ -1,8 +1,13 @@
 {
   "name": "@soulerou/oa-adapter-claude",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Headless claude AgentAdapter for OvernightAgent.",
-  "keywords": ["overnight-agent", "oa", "adapter", "claude"],
+  "keywords": [
+    "overnight-agent",
+    "oa",
+    "adapter",
+    "claude"
+  ],
   "author": "Souler Ou",
   "license": "MIT",
   "homepage": "https://github.com/a20185/OvernightAgent#readme",
@@ -17,7 +22,11 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "publishConfig": {
     "access": "public"
   },
