@@ -45,36 +45,18 @@ export function renderSandboxProfile(opts: RenderSandboxProfileOpts): string {
 (allow process-fork)
 (allow signal (target self))
 
-; --- System read-only paths ---
-(allow file-read* (subpath "/usr"))
-(allow file-read* (subpath "/bin"))
-(allow file-read* (subpath "/Library"))
-(allow file-read* (subpath "/opt/homebrew"))
-(allow file-read* (subpath "/usr/local"))
-(allow file-read* (subpath "/private/tmp"))
-(allow file-read* (subpath "/private/var"))
-(allow file-read* (subpath "/dev"))
-(allow file-read* (subpath "/etc"))
-(allow file-read* (subpath "/var"))
+; --- Broad read access (required by dyld on macOS 15+) ---
+(allow file-read* (subpath "/"))
 
 ; --- Worktree: read + write ---
-(allow file-read* file-write* (subpath "${worktreeAbs}"))
+(allow file-write* (subpath "${worktreeAbs}"))
 
 ; --- Temp directories: read + write ---
-(allow file-read* file-write* (subpath "/tmp"))
-(allow file-read* file-write* (subpath "/private/tmp"))
-
-; --- Home toolchain / config dirs: read-only ---
-(allow file-read* (subpath "${homeAbs}/.claude"))
-(allow file-read* (subpath "${homeAbs}/.npm-global"))
-(allow file-read* (subpath "${homeAbs}/.config"))
-(allow file-read* (subpath "${homeAbs}/.bun"))
-(allow file-read* (subpath "${homeAbs}/.nvm"))
-(allow file-read* (subpath "${homeAbs}/.cargo"))
-(allow file-read* (subpath "${homeAbs}/.rustup"))
+(allow file-write* (subpath "/tmp"))
+(allow file-write* (subpath "/private/tmp"))
 
 ; --- Network ---
-(allow network-outbound (tcp "*:443"))
+(allow network-outbound)
 
 ; --- System entitlements ---
 (allow system-socket)

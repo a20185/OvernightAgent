@@ -2,16 +2,15 @@ import { describe, it, expect } from 'vitest';
 import { renderSandboxProfile } from '../../src/sandbox/render.js';
 
 describe('renderSandboxProfile', () => {
-  it('renders worktree + home into the template with both homebrew prefixes', () => {
+  it('renders worktree write rule and broad read access', () => {
     const out = renderSandboxProfile({
       worktreeAbs: '/abs/worktrees/foo',
       homeAbs: '/Users/souler',
       extraAllowPaths: [],
     });
-    expect(out).toMatch(/\(allow file-read\* file-write\* \(subpath "\/abs\/worktrees\/foo"\)\)/);
-    expect(out).toMatch(/\(allow file-read\* \(subpath "\/opt\/homebrew"\)\)/);
-    expect(out).toMatch(/\(allow file-read\* \(subpath "\/usr\/local"\)\)/);
-    expect(out).toMatch(/\(allow file-read\* \(subpath "\/Users\/souler\/\.claude"\)\)/);
+    expect(out).toMatch(/\(allow file-write\* \(subpath "\/abs\/worktrees\/foo"\)\)/);
+    expect(out).toMatch(/\(allow file-read\* \(subpath "\/"\)\)/);
+    expect(out).toMatch(/\(allow network-outbound\)/);
   });
 
   it('emits one extraAllowPaths line per entry with subpath syntax', () => {
