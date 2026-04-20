@@ -1,0 +1,13 @@
+{
+  "SessionStart": [
+    {
+      "matcher": "compact",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "# oa:hook=compact-recovery:v1\nbash -c 'if [ -z \"${OA_TASK_DIR:-}\" ]; then exit 0; fi; echo \"=== OvernightAgent post-compact recovery ===\"; echo \"Your Claude Code session was just auto-compacted mid-run. The full per-attempt prompt (tail-protocol, fix-loop findings, references) is at $OA_CURRENT_PROMPT — re-read it before continuing.\"; if [ -f \"$OA_TASK_DIR/PROGRESS.md\" ]; then echo; echo \"## PROGRESS.md\"; cat \"$OA_TASK_DIR/PROGRESS.md\"; fi; echo; echo \"Find the next [ ] item in PROGRESS.md and resume work on that step. Do not start over from the top.\"'"
+        }
+      ]
+    }
+  ]
+}
