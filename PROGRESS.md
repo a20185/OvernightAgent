@@ -1,8 +1,8 @@
 # OvernightAgent — Implementation Progress
 
-**Snapshot at:** Post-7.7 handoff refresh on `dev`
-**Total commits on dev:** 64 at this checkpoint (2 design + 61 implementation/checkpoint + 1 handoff refresh)
-**Workspace tests:** 396 passing (oa-core 385, oa-adapter-claude 6, oa-cli 3, 2 adapter smoke)
+**Snapshot at:** Post-v0 completion
+**Total commits on dev:** 67 at this checkpoint
+**Workspace tests:** 426 passing across 5 packages
 
 ---
 
@@ -10,123 +10,123 @@
 
 | # | Phase | Status | Commits | Notes |
 |---|---|---|---|---|
-| 0 | Repo & tooling scaffold | ✅ done | 4 sub-tasks (with fix-loops on 0.2, 0.3, 0.4) | pnpm@9.15.4, Node 22+, TS 6, Vitest 4, ESLint 8 (flat-config migration deferred) |
-| 1 | oa-core foundations | ✅ done | 6 sub-tasks (with fix-loop on 1.1, 1.4, 1.5) | paths/atomicJson/home/lock/schemas/ids; established conventions |
-| 2 | Worktree manager | ✅ done | 5 sub-tasks (with fix-loops on 2.1, 2.2, 2.3, 2.4) | create/rewindToHead/remove/commitsSince + hardening |
-| 3 | Inbox/queue/plan stores | ✅ done | 3 sub-tasks (with fix-loops on 3.1, 3.3) | Shared `withInboxLock` for plan seal atomicity |
-| 4 | Intake pipeline | ✅ done | 4 sub-tasks (with fix-loop on 4.3) | parseSteps/references/handoff/submit |
-| 5 | AgentAdapter + claude | ✅ done | 4 sub-tasks (clean) | types/spawnHeadless/claude/registry |
-| 6 | Verify pipeline + fix loop | ✅ done | 7 sub-tasks (with small fix-up on 6.5 schemas) | tail/gates/reviewer/context/state/fixLoop + integration test |
-| **7** | **Supervisor / daemon / socket / resume** | **7/8** | runPlan + daemonization + pidfile lifecycle + control socket wiring done | Resume protocol still pending |
-| 8 | oa-cli surface | ⬜ pending | 10 sub-tasks queued | Each command wraps oa-core APIs |
-| 9 | SUMMARY.md renderer | ⬜ pending | 3 sub-tasks queued | events reader + renderer + auto-render hook |
-| 10 | codex + opencode adapters | ⬜ pending | 3 sub-tasks queued | Mirror oa-adapter-claude shape |
-| 11 | Per-host shims | ⬜ pending | 3 sub-tasks queued | Resource files only — no JS |
-| 12 | End-to-end + docs | ⬜ pending | 4 sub-tasks queued | e2e tests + README + final verification |
+| 0 | Repo & tooling scaffold | ✅ done | 4 sub-tasks | pnpm@9.15.4, Node 22+, TS 6, Vitest 4, ESLint 8 |
+| 1 | oa-core foundations | ✅ done | 6 sub-tasks | paths/atomicJson/home/lock/schemas/ids |
+| 2 | Worktree manager | ✅ done | 5 sub-tasks | create/adopt/rewindToHead/remove/commitsSince |
+| 3 | Inbox/queue/plan stores | ✅ done | 3 sub-tasks | Shared `withInboxLock` for plan seal atomicity |
+| 4 | Intake pipeline | ✅ done | 4 sub-tasks | parseSteps/references/handoff/submit |
+| 5 | AgentAdapter + claude | ✅ done | 4 sub-tasks | types/spawnHeadless/claude/registry |
+| 6 | Verify pipeline + fix loop | ✅ done | 7 sub-tasks | tail/gates/reviewer/context/state/fixLoop + integration test |
+| 7 | Supervisor / daemon / socket / resume | ✅ done | 8 sub-tasks | runPlan + daemonization + pidfile + control socket + resume |
+| 8 | oa-cli surface | ✅ done | 1 bundled commit | 10 subcommands + integration tests |
+| 9 | SUMMARY.md renderer | ✅ done | 1 bundled commit | events reader + renderer + auto-render hook + `oa summary` |
+| 10 | codex + opencode adapters | ✅ done | 1 bundled commit | both adapters + registry tests |
+| 11 | Per-host shims | ✅ done | 1 bundled commit | resource files (markdown), 3 host bundles |
+| 12 | End-to-end + docs | ✅ done | 1 bundled commit | CLI e2e + README + ADR alignment + final verification |
 
 ---
 
-## Phase 7 task-level detail
+## Phase 7 task-level detail (reference; final)
 
 | Task | Status | Commit(s) | Notes |
 |---|---|---|---|
-| 7.1 | events.jsonl writer | ✅ | `846e644` | Notable: caught real concurrency bug — Node's `FileHandle.appendFile` is NOT internally serialized despite POSIX O_APPEND; chained-promise FIFO fix |
-| 7.2 | Bootstrap runner | ✅ | `41d615b` | Empty script no-ops; tmp script chmod 755 + cleanup in finally; widened TaskBootstrapEnd schema variant |
-| 7.3 | Supervisor outer loop | ✅ | `0ea961e` + fix-up `200829b` | 668 LOC source + 550 LOC tests + 6 integration scenarios. Fix-up addressed 8 Important review items (try/finally, abort checks, blocked-step exit, run.error emission, dedicated step.timeout/stdoutCapHit events, etc.) |
-| 7.4 | Daemonization | ✅ | `4be272f` | `detachAndRun` + child entry scaffold + integration coverage; review fix-ups caught fd-shape drift, JSONL corruption risk, startup signal race, false-success missing-entry path, and launcher-exit test gap |
-| 7.5 | Pidfile lifecycle | ✅ | `18cec8b` | `proper-lockfile`-guarded `acquire/release/isStale`, entry wired through helper, startup-ownership regression test, and true cross-process contention coverage |
-| 7.6 | Control socket | ✅ | `2b8d50d` + `fix(core): preserve live control socket` | Standalone AF_UNIX request/reply helper with `schemaVersion: 1`, stale-socket cleanup, server-close unlink, and regression coverage that a second `serve()` cannot steal a live socket path |
-| 7.7 | Wire socket into supervisor | ✅ | `4160ee8` + `1b5c03b` | `runPlan` owns the control socket, `status` reports live state, graceful/force stop map to resumable `pending`, `spawnHeadless` closes the abort/onSpawned races, registry fallback is active, and the entry path now cleans up injected signal handlers |
-| 7.8 | Resume protocol | ⬜ | — | Detect stale pidfile, rewindToHead in-flight worktrees, mark steps pending, re-enter outer loop |
+| 7.1 | events.jsonl writer | ✅ | `846e644` | Chained-promise FIFO to serialize appends |
+| 7.2 | Bootstrap runner | ✅ | `41d615b` | Empty script no-ops; tmp script chmod 755 + cleanup |
+| 7.3 | Supervisor outer loop | ✅ | `0ea961e` + fix-up `200829b` | 8 review items addressed in fix-up |
+| 7.4 | Daemonization | ✅ | `4be272f` | detachAndRun + entry scaffold + 3 review fix-ups |
+| 7.5 | Pidfile lifecycle | ✅ | `18cec8b` | proper-lockfile + startup-ownership regression test |
+| 7.6 | Control socket | ✅ | `2b8d50d` + `cc1e094` | length-prefixed JSON + live-socket preservation |
+| 7.7 | Wire socket into supervisor | ✅ | `4160ee8` + `1b5c03b` | live status, graceful/force stop, entry signal cleanup |
+| 7.8 | Resume protocol | ✅ | `af5a740` | rewind + orphan sweep + adopt-or-create + skip-done |
 
 ---
 
-## Carry-forwards into Phase 7.8
+## Phase 8 task-level detail
 
-Captured on Task #15 (Phase 7) description in the tracker. Pasted here for reference:
+All landed in commit `beb4adf`:
 
-(a) Supervisor startup sweeps `<runDir>/*.tmp.<oldpid>.*` orphan temp files (left by crashed `writeJsonAtomic` calls).
-
-(b) `writeJsonAtomic` should grow `{mode?: number}` option when config holds secret-adjacent values (e.g., `0o600` for files containing API keys).
-
-(c) Consider opt-in `{fsync?: true}` on writeJsonAtomic for queue/checkpoint writes that need power-loss durability.
-
-(d) Supervisor MUST pass an explicit `onCompromised` handler to proper-lockfile so unhandled mtime-refresh throws don't crash the long-running daemon.
-
-(e) `worktree.rewindToHead`'s PRECONDITION: caller must reap the prior attempt's process tree (no live file handles under absRoot) before calling. Windows would EBUSY; macOS/Linux would orphan.
-
-(f) Make `worktree.remove()` idempotent for partial-cleanup retry (catch "is not a working tree"/"does not exist" from worktree-remove and proceed to branch -D).
-
-(g) Consider `removeSafe(info)` non-force variant if a manual operator-driven archive CLI lands.
-
-(h) Plan partial-failure recovery scan (orphan queued tasks not in any plan).
-
-(i) Phase 6 inner-loop reference at `test/innerLoop.integration.test.ts` shows the v0 loop shape — supervisor must add: rewindToHead between attempts (ADR-0003), one AbortSignal per step/task for control-socket cancel, per-attempt issue history (not just last) in events log, tail-fail short-circuits before reviewer (intentional — comment), stepStartSha policy (one captured at step start; persists across fix-loop attempts). **MOSTLY APPLIED** — Task 7.7 closed the control-socket cancel/live-state parts; the rewind/resume portion lands in 7.8.
-
-(j) Default reviewer prompt path collision under future parallel mode (Phase 8+): currently materialized at `<runDir>/reviewer-default-prompt.md` which would race between concurrent tasks. Add per-task suffix when parallel lands.
+| Task | Status | Subject |
+|---|---|---|
+| 8.1 | ✅ | `oa intake submit --payload|--payload-file` |
+| 8.2 | ✅ | `oa intake list|show|rm` |
+| 8.3 | ✅ | `oa queue add|ls|rm|clear` |
+| 8.4 | ✅ | `oa plan create|show|ls` |
+| 8.5 | ✅ | `oa run [--detach] [--dry-run]` |
+| 8.6 | ✅ | `oa stop [--now]` |
+| 8.7 | ✅ | `oa status [--json]` |
+| 8.8 | ✅ | `oa tail [--raw] [--once]` |
+| 8.9 | ✅ | `oa rerun <planId> [--detach]` (OA_RESUME=1 wired) |
+| 8.10 | ✅ | `oa archive <id>` |
 
 ---
 
-## Carry-forwards into Phase 8 (CLI surface)
+## Phase 9 task-level detail
 
-Captured on Task #16 (Phase 8) description in the tracker:
+All landed in commit `06bec6f`:
 
-(none yet — Phase 8 description is the original plan text without additions)
-
----
-
-## Carry-forwards into Phase 11 (per-host shims)
-
-Captured on Task #19:
-
-(a) Verify `claude -p <inline-text>` actually works against an installed claude — consider stdin/`--prompt-file` to avoid `ps`-listing leaks and argv length limits.
-
-(b) Revisit `parseSessionIdFromStreamJson` once codex+opencode adapters land — tighten to require `subtype === 'init'` if permissive parser doesn't pay off.
+| Task | Status | Subject |
+|---|---|---|
+| 9.1 | ✅ | events/reader.ts + tests (ENOENT → [], onInvalid hook) |
+| 9.2 | ✅ | summary/render.ts + snapshot tests (tolerates unknown event kinds) |
+| 9.3 | ✅ | `oa summary` command + auto-render on plan end (runPlan finally) |
 
 ---
 
-## Carry-forwards into Phase 12 (e2e + docs)
+## Phase 10 task-level detail
 
-Captured on Task #20:
+All landed in commit `9dd45dc`:
 
-(a) Break the oa-core ↔ oa-adapter-* workspace cycle before publish — npm/registry rejects circular deps. Recommended: use `vi.mock()` in registry.test.ts to fake adapter packages; live-load test for claude can stay if claude is the only legitimate need.
-
-(b) Task 5.3 follow-ups: verify `claude -p <inline>` against installed claude (consider stdin/--prompt-file for ps-leak/ARG_MAX safety); decide whether to tighten parseSessionIdFromStreamJson once codex+opencode land.
-
-(c) Task 6.3+6.4 ADR alignment: ADR-0008 promises protocol blocks live in `oa-core/prompts/protocol-status.md` and `protocol-review.md` but they're currently inlined as constants in context.ts and review.ts. Either extract to those files or update ADR-0008 to match the inlined-constant reality.
-
----
-
-## Carry-forwards from Task 7.3 review (remaining after 7.7; fold into 7.8+)
-
-Suggestions level (from the Task 7.3 code-quality review):
-
-- Extract `worktree.resetToSha(absRoot, sha)` so `runStep` calls the worktree namespace instead of open-coding `git reset --hard <sha> && git clean -fdx` between attempts.
-- Add `attempt?: number` overload to `progress.mark()` so the typed `_progress.json::attempt` field stops being write-never. Currently the typed field is dead code; supervisor passes attempt info via `detail` string.
-- Centralize the `28800` (8h) default `planBudgetSec` constant somewhere shared (currently duplicated as a magic number in runPlan).
-- Document `RunStop.reason` enum extension if `'halted-on-failure'` is ever needed.
-- Make `reviewer-default-prompt.md` per-task-suffixed for future parallel-mode safety.
-- Document worktree lifecycle decoupling at the top of `runPlan` (worktrees outlive the supervisor; cleanup is a separate `oa archive` operation).
-- Document the asymmetry: "abort leaves remaining tasks at queued; budget marks them as budget-exhausted".
+| Task | Status | Subject |
+|---|---|---|
+| 10.1 | ✅ | oa-adapter-codex (`codex exec --model --prompt-file`) |
+| 10.2 | ✅ | oa-adapter-opencode (`opencode run --model --prompt-file`) |
+| 10.3 | ✅ | registry.test.ts covers all three adapters |
 
 ---
 
-## Test counts by package (snapshot)
+## Phase 11 task-level detail
+
+All landed in commit `5e46476`:
+
+| Task | Status | Subject |
+|---|---|---|
+| 11.1 | ✅ | Claude Code shim (`oa-shims/claude/`) |
+| 11.2 | ✅ | Codex shim (`oa-shims/codex/`) |
+| 11.3 | ✅ | opencode shim (`oa-shims/opencode/`) |
+
+---
+
+## Phase 12 task-level detail
+
+All landed in commit `19525e7`:
+
+| Task | Status | Subject |
+|---|---|---|
+| 12.1 | ✅ | CLI-level e2e (`oa-cli/test/e2e.test.ts`); full supervisor e2e by oa-core integration tests |
+| 12.2 | ✅ | Resume e2e covered by `oa-core/test/supervisor/resume.integration.test.ts` |
+| 12.3 | ✅ | Top-level README.md (lifecycle, layout, architecture, limits) |
+| 12.4 | ✅ | Final verification: typecheck + lint + build + test all green |
+
+---
+
+## Test counts by package (final)
 
 | Package | Files | Tests |
 |---|---|---|
-| oa-core | 38 | 385 |
-| oa-adapter-claude | 3 | 6 |
-| oa-adapter-codex | 1 | 1 (smoke) |
-| oa-adapter-opencode | 1 | 1 (smoke) |
-| oa-cli | 2 | 3 |
-| **Total** | **45** | **396** |
+| oa-core | 39 | 400 |
+| oa-adapter-claude | 2 | 6 |
+| oa-adapter-codex | 1 | 2 |
+| oa-adapter-opencode | 1 | 2 |
+| oa-cli | 4 | 16 |
+| **Total** | **47** | **426** |
 
 ---
 
 ## Open ADRs
 
-13 ADRs at `docs/adr/`. All `Status: Accepted`. ADR-0012 (control socket) supersedes the SIGUSR1 part of ADR-0010 (process model). ADR-0013 (eslint enforcement gaps) added during Task 0.2.
+13 ADRs at `docs/adr/`. All `Status: Accepted`. ADR-0012 supersedes the
+SIGUSR1 portion of ADR-0010. ADR-0013 added during Task 0.2. ADR-0008
+updated during Phase 12 to document the protocol-block inlining deferral.
 
 | # | Title | Status |
 |---|---|---|
@@ -137,9 +137,29 @@ Suggestions level (from the Task 7.3 code-quality review):
 | 0005 | Runs as events.jsonl + summary | Accepted |
 | 0006 | Context injection per step | Accepted |
 | 0007 | References tiered handling | Accepted |
-| 0008 | Agent tail-message protocol | Accepted (with prompt-file extraction TODO — see Phase 12 carry-forward (c)) |
+| 0008 | Agent tail-message protocol | Accepted (prompt-file extraction deferred) |
 | 0009 | AgentAdapter interface | Accepted |
-| 0010 | Process model — detached supervisor | Accepted (SIGUSR1 portion superseded by ADR-0012) |
+| 0010 | Process model — detached supervisor | Accepted (SIGUSR1 superseded by ADR-0012) |
 | 0011 | Strategy as orthogonal toggles | Accepted |
 | 0012 | Daemon control via Unix socket | Accepted |
 | 0013 | ESLint path-discipline enforcement gaps | Accepted |
+
+---
+
+## Post-v0 follow-ups (captured from carry-forwards)
+
+1. Break the `oa-core` ↔ `oa-adapter-*` workspace cycle via `vi.mock()`
+   in registry tests. Blocks `npm publish`.
+2. Extract `oa-core/prompts/protocol-status.md` + `protocol-review.md`
+   from their inlined constants (per ADR-0008 note).
+3. Tighten `parseSessionIdFromStreamJson` to require `subtype === 'init'`
+   once codex / opencode stabilize.
+4. Schema-bound `intake.executor.extraArgs` (regex, secret-pattern
+   rejection) to close the ps-listing / argv-leak concern.
+5. Consider `worktree.removeSafe()` for a future operator archive path.
+6. Per-task suffix on `reviewer-default-prompt.md` once `parallel.max > 1`
+   is a real code path.
+7. `writeJsonAtomic({mode?: number, fsync?: true})` for secret-adjacent
+   and power-loss-sensitive writes (pidfile, queue).
+8. Plan partial-failure recovery scan (orphan queued tasks not in any
+   plan) on supervisor startup.
