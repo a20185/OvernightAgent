@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Build-time shim bundler (ADR-0014). Copies `packages/oa-shims/<host>/{commands,skills}/`
+// Build-time shim bundler (ADR-0014). Copies `packages/oa-shims/<host>/{commands,skills,hooks}/`
 // into `packages/oa-cli/dist/shims/<host>/` so they ship inside the published
 // `@soulerou/oa-cli` tarball and `oa shims install` can find them relative to
 // the compiled `cli.js` via `new URL('./shims/...', import.meta.url)`.
@@ -23,7 +23,7 @@ const SHIMS_DEST = path.resolve(CLI_ROOT, 'dist', 'shims');
 const HOSTS = ['claude', 'codex', 'opencode'];
 // Subdirs we care about per host. A host that doesn't have one is skipped
 // without error (codex/opencode currently have `commands/` only).
-const SUBDIRS = ['commands', 'skills'];
+const SUBDIRS = ['commands', 'skills', 'hooks'];
 
 async function exists(absPath) {
   try {
@@ -83,7 +83,7 @@ async function main() {
       const subDest = path.resolve(SHIMS_DEST, host, sub);
       await copyDir(subSrc, subDest);
       const after = await fs.readdir(subDest, { recursive: true });
-      copiedFiles += after.filter((name) => name.endsWith('.md')).length;
+      copiedFiles += after.filter((name) => name.endsWith('.md') || name.endsWith('.json')).length;
     }
 
     // Per-host README.md is handy for `oa shims show` / debugging — copy it

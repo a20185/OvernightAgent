@@ -3,14 +3,16 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
+import { writeFileAtomic } from '@soulerou/oa-core';
 
 /**
- * `oa shims install` (ADR-0014). Copies host-specific slash-command markdown
- * (and, for claude, skill bundles) out of `@soulerou/oa-cli`'s bundled
- * `dist/shims/<host>/` tree into whatever directory the host reads from.
+ * `oa shims install` (ADR-0014, ADR-0015). Copies host-specific slash-command
+ * markdown (and, for claude, skill bundles and hooks) out of
+ * `@soulerou/oa-cli`'s bundled `dist/shims/<host>/` tree into whatever
+ * directory the host reads from.
  *
  * Host conventions baked in here:
- *   - claude   → `.claude/commands/` + `.claude/skills/`   (project default, user optional)
+ *   - claude   → `.claude/commands/` + `.claude/skills/` + `.claude/settings.json` (hooks merge, ADR-0015)
  *   - codex    → `~/.codex/prompts/`                       (user only in v0; project refused)
  *   - opencode → `~/.config/opencode/commands/`            (user only in v0; project refused)
  *
@@ -65,8 +67,8 @@ export interface ShimsInstallResult {
 interface HostSpec {
   defaultScope: Scope;
   supportedScopes: ReadonlySet<Scope>;
-  /** Build absolute target paths from resolved home+cwd. `skills` is optional per host. */
-  target: (home: string, cwd: string, scope: Scope) => { commands: string; skills?: string };
+  /** Build absolute target paths from resolved home+cwd. `skills` and `settings` are optional per host. */
+  target: (home: string, cwd: string, scope: Scope) => { commands: string; skills?: string; settings?: string };
 }
 
 const HOSTS: Record<Host, HostSpec> = {
@@ -78,6 +80,7 @@ const HOSTS: Record<Host, HostSpec> = {
       return {
         commands: path.resolve(base, '.claude', 'commands'),
         skills: path.resolve(base, '.claude', 'skills'),
+        settings: path.resolve(base, '.claude', 'settings.json'),
       };
     },
   },
@@ -133,6 +136,93 @@ async function walkFiles(absRoot: string): Promise<string[]> {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Sentinel-based settings.json merge (ADR-0015). Upserts hook entries into
+// Claude Code's `.claude/settings.json` using a `# oa:hook=<id>:` sentinel
+// embedded in each hook's `command` string. The sentinel survives version
+// bumps — `# oa:hook=compact-recovery:v1` and `# oa:hook=compact-recovery:v99`
+// both match the prefix `# oa:hook=compact-recovery:`.
+// ---------------------------------------------------------------------------
+
+/** Regex that captures the hook id from a sentinel like `# oa:hook=compact-recovery:v1`. */
+const OA_HOOK_SENTINEL_RE = /# oa:hook=([^:]+):/;
+
+/**
+ * Extracts the OvernightAgent hook id from the first sentinel found across
+ * all `hooks[].command` strings in a hook entry. Returns `undefined` if the
+ * entry has no oa sentinel (i.e. it belongs to the user or another tool).
+ */
+function extractHookId(entry: { hooks?: { command?: string }[] }): string | undefined {
+  for (const h of entry.hooks ?? []) {
+    if (typeof h.command === 'string') {
+      const m = OA_HOOK_SENTINEL_RE.exec(h.command);
+      if (m) return m[1];
+    }
+  }
+  return undefined;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type HookEntry = Record<string, any>;
+
+/**
+ * Merges new hook entries (from a bundled `<host>/hooks/*.json` file) into
+ * the existing `settings.json` at `settingsPath`.
+ *
+ * For each top-level key in `newHookObj` (e.g. `"SessionStart"`):
+ *   1. Ensure `existing.hooks[key]` is an array.
+ *   2. For each new entry, extract its hook id from the sentinel.
+ *   3. Remove existing entries whose sentinel matches the same id.
+ *   4. Append the new entry.
+ *   5. Write atomically via `writeFileAtomic`.
+ */
+export async function mergeClaudeSettings(
+  settingsPath: string,
+  newHookObj: Record<string, HookEntry[]>,
+): Promise<void> {
+  // Read existing settings, defaulting to empty object on ENOENT.
+  let existing: Record<string, unknown>;
+  try {
+    const raw = await fs.readFile(settingsPath, 'utf8');
+    existing = JSON.parse(raw) as Record<string, unknown>;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      existing = {};
+    } else {
+      throw err;
+    }
+  }
+
+  // Ensure hooks container exists.
+  if (!existing.hooks || typeof existing.hooks !== 'object' || Array.isArray(existing.hooks)) {
+    existing.hooks = {};
+  }
+  const hooks = existing.hooks as Record<string, HookEntry[]>;
+
+  for (const [key, newEntries] of Object.entries(newHookObj)) {
+    if (!Array.isArray(hooks[key])) {
+      hooks[key] = [];
+    }
+
+    for (const newEntry of newEntries) {
+      const hookId = extractHookId(newEntry);
+
+      if (hookId !== undefined) {
+        // Remove all prior entries we own with this hook id (sentinel-based).
+        hooks[key] = hooks[key].filter((existing: HookEntry) => {
+          const existingId = extractHookId(existing);
+          return existingId !== hookId;
+        });
+      }
+
+      // Append our new entry.
+      hooks[key].push(newEntry);
+    }
+  }
+
+  await writeFileAtomic(settingsPath, JSON.stringify(existing, null, 2));
+}
+
 async function installOne(
   host: Host,
   opts: Required<Pick<ShimsInstallOpts, 'sourceRoot' | 'home' | 'cwd' | 'log'>> &
@@ -180,6 +270,31 @@ async function installOne(
     const skillsSrc = path.resolve(hostSrc, 'skills');
     if (await exists(skillsSrc)) {
       await copyTree(skillsSrc, target.skills, opts, result);
+    }
+  }
+
+  // Hooks — claude-only in v0. Unlike commands/skills (simple file copies),
+  // hooks are JSON fragments that get merged into `.claude/settings.json`
+  // using a sentinel-based upsert (ADR-0015).
+  if (target.settings !== undefined) {
+    const hooksSrc = path.resolve(hostSrc, 'hooks');
+    if (await exists(hooksSrc)) {
+      const hookFiles = await walkFiles(hooksSrc);
+      for (const hookFile of hookFiles) {
+        if (!hookFile.endsWith('.json')) continue;
+        const raw = await fs.readFile(hookFile, 'utf8');
+        const hookObj = JSON.parse(raw) as Record<string, HookEntry[]>;
+
+        if (opts.dryRun === true) {
+          result.planned.push(target.settings);
+          opts.log(`[dry-run] would merge hooks from ${path.basename(hookFile)} into ${target.settings}`);
+          continue;
+        }
+
+        await mergeClaudeSettings(target.settings, hookObj);
+        result.copied.push(target.settings);
+        opts.log(`merged hooks from ${path.basename(hookFile)} into ${target.settings}`);
+      }
     }
   }
 

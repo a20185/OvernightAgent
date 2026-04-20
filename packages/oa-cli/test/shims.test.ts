@@ -16,6 +16,7 @@ async function buildFakeSourceTree(sourceRoot: string): Promise<void> {
   // Minimal layout mirroring what `scripts/bundle-shims.mjs` produces:
   //   <sourceRoot>/<host>/commands/<file>.md
   //   <sourceRoot>/claude/skills/<skill>/SKILL.md   (claude only has skills)
+  //   <sourceRoot>/claude/hooks/<file>.json          (claude only has hooks)
   for (const host of ['claude', 'codex', 'opencode'] as const) {
     const cmdDir = path.resolve(sourceRoot, host, 'commands');
     await fs.mkdir(cmdDir, { recursive: true });
@@ -25,6 +26,28 @@ async function buildFakeSourceTree(sourceRoot: string): Promise<void> {
   const skillDir = path.resolve(sourceRoot, 'claude', 'skills', 'oa-intake');
   await fs.mkdir(skillDir, { recursive: true });
   await fs.writeFile(path.resolve(skillDir, 'SKILL.md'), '# claude skill\n', 'utf8');
+
+  // Fake hook mirroring compact-recovery.json shape.
+  const hooksDir = path.resolve(sourceRoot, 'claude', 'hooks');
+  await fs.mkdir(hooksDir, { recursive: true });
+  const hookObj = {
+    SessionStart: [
+      {
+        matcher: 'compact',
+        hooks: [
+          {
+            type: 'command',
+            command: '# oa:hook=compact-recovery:v1\necho "recovered"',
+          },
+        ],
+      },
+    ],
+  };
+  await fs.writeFile(
+    path.resolve(hooksDir, 'compact-recovery.json'),
+    JSON.stringify(hookObj, null, 2),
+    'utf8',
+  );
 }
 
 describe('installShims', () => {
@@ -155,5 +178,92 @@ describe('installShims', () => {
     await expect(
       installShims({ host: 'claude', sourceRoot, home, cwd, log: () => {} }),
     ).rejects.toThrow(/shim source.*claude/i);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Hooks / settings.json merge tests (ADR-0015)
+  // ---------------------------------------------------------------------------
+
+  it('bundles and installs hooks into .claude/settings.json', async () => {
+    await installShims({ host: 'claude', sourceRoot, home, cwd, log: () => {} });
+
+    const settingsPath = path.resolve(cwd, '.claude', 'settings.json');
+    const raw = await fs.readFile(settingsPath, 'utf8');
+    const settings = JSON.parse(raw);
+
+    // Should have a SessionStart entry with our hook containing the sentinel.
+    expect(settings.hooks).toBeDefined();
+    expect(settings.hooks.SessionStart).toBeInstanceOf(Array);
+    const entry = settings.hooks.SessionStart.find(
+      (e: { hooks: { command: string }[] }) =>
+        e.hooks?.some((h: { command: string }) => h.command.includes('# oa:hook=compact-recovery:')),
+    );
+    expect(entry).toBeDefined();
+    expect(entry.hooks[0].command).toContain('# oa:hook=compact-recovery:v1');
+  });
+
+  it('upserts existing hook on re-install without duplicating', async () => {
+    // Pre-seed settings.json with a prior version of our hook plus a user hook.
+    const settingsPath = path.resolve(cwd, '.claude', 'settings.json');
+    await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+    const priorSettings = {
+      hooks: {
+        SessionStart: [
+          {
+            matcher: '',
+            hooks: [{ type: 'command', command: 'echo user-hook' }],
+          },
+          {
+            matcher: 'compact',
+            hooks: [
+              {
+                type: 'command',
+                command: '# oa:hook=compact-recovery:v0\necho old-recovery',
+              },
+            ],
+          },
+        ],
+      },
+    };
+    await fs.writeFile(settingsPath, JSON.stringify(priorSettings, null, 2), 'utf8');
+
+    await installShims({ host: 'claude', sourceRoot, home, cwd, log: () => {} });
+
+    const raw = await fs.readFile(settingsPath, 'utf8');
+    const settings = JSON.parse(raw);
+
+    // User hook preserved.
+    const userEntry = settings.hooks.SessionStart.find(
+      (e: { hooks: { command: string }[] }) =>
+        e.hooks?.some((h: { command: string }) => h.command === 'echo user-hook'),
+    );
+    expect(userEntry).toBeDefined();
+
+    // Our hook is now v1 (not v0) and appears exactly once.
+    const ourEntries = settings.hooks.SessionStart.filter(
+      (e: { hooks: { command: string }[] }) =>
+        e.hooks?.some((h: { command: string }) => h.command.includes('# oa:hook=compact-recovery:')),
+    );
+    expect(ourEntries).toHaveLength(1);
+    expect(ourEntries[0].hooks[0].command).toContain('# oa:hook=compact-recovery:v1');
+
+    // Total entries: user hook + our hook = 2 (v0 removed, not left behind).
+    expect(settings.hooks.SessionStart).toHaveLength(2);
+  });
+
+  it('creates .claude/settings.json atomically when absent', async () => {
+    // No pre-existing settings.json at all.
+    const settingsPath = path.resolve(cwd, '.claude', 'settings.json');
+    await expect(fs.access(settingsPath)).rejects.toThrow();
+
+    await installShims({ host: 'claude', sourceRoot, home, cwd, log: () => {} });
+
+    // File now exists with the hook.
+    const raw = await fs.readFile(settingsPath, 'utf8');
+    const settings = JSON.parse(raw);
+    expect(settings.hooks.SessionStart).toHaveLength(1);
+    expect(settings.hooks.SessionStart[0].hooks[0].command).toContain(
+      '# oa:hook=compact-recovery:v1',
+    );
   });
 });
