@@ -10,6 +10,7 @@ import {
   IdSchema,
   ID_REGEX,
   VerifyConfigSchema,
+  TaskStatus,
 } from '../src/schemas.js';
 import { DEFAULT_CONFIG } from '../src/home.js';
 
@@ -557,6 +558,14 @@ describe('EventSchema', () => {
       const result = EventSchema.safeParse(ev);
       expect(result.success, `expected ${kind} to reject`).toBe(false);
     }
+  });
+});
+
+// -----------------------------------------------------------------------------
+// TaskStatus — 'skipped' value for budget-abort terminal state
+describe('TaskStatus', () => {
+  it('accepts "skipped" as a valid status', () => {
+    expect(TaskStatus.parse('skipped')).toBe('skipped');
   });
 });
 

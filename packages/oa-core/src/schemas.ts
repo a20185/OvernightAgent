@@ -57,6 +57,7 @@ export const TaskStatus = z.enum([
   'stopped',
   'bootstrap-failed',
   'budget-exhausted',
+  'skipped',
 ]);
 
 export const PlanStatus = z.enum([
