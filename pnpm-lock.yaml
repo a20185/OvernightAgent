@@ -42,9 +42,17 @@ importers:
         specifier: workspace:*
         version: link:../oa-core
 
-  packages/oa-adapter-codex: {}
+  packages/oa-adapter-codex:
+    dependencies:
+      oa-core:
+        specifier: workspace:*
+        version: link:../oa-core
 
-  packages/oa-adapter-opencode: {}
+  packages/oa-adapter-opencode:
+    dependencies:
+      oa-core:
+        specifier: workspace:*
+        version: link:../oa-core
 
   packages/oa-cli:
     dependencies:

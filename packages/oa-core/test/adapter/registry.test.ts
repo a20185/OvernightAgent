@@ -54,14 +54,18 @@ describe('getAdapter', () => {
     });
   });
 
-  it('throws clearly for codex (stub package with no adapter export)', async () => {
-    // `oa-adapter-codex/src/index.ts` is `export {};` from Task 0.3. Phase 10
-    // will replace it with a real adapter; until then, the registry must
-    // refuse to hand back an undefined and instead surface a clear message
-    // pointing at the package name.
-    await expect(getAdapter('codex')).rejects.toThrow(
-      /no valid AgentAdapter export found in oa-adapter-codex/,
-    );
+  it('loads the codex adapter (Phase 10)', async () => {
+    const c = await getAdapter('codex');
+    expect(c.id).toBe('codex');
+    expect(typeof c.defaultModel).toBe('string');
+    expect(typeof c.run).toBe('function');
+  });
+
+  it('loads the opencode adapter (Phase 10)', async () => {
+    const o = await getAdapter('opencode');
+    expect(o.id).toBe('opencode');
+    expect(typeof o.defaultModel).toBe('string');
+    expect(typeof o.run).toBe('function');
   });
 
   it('throws clearly for a cast-coerced unknown id ("gemini" as AgentId)', async () => {
