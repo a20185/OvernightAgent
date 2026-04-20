@@ -87,3 +87,103 @@ describe('EventSchema — step.stall', () => {
     expect(EventSchema.safeParse(ev).success).toBe(false);
   });
 });
+
+describe('EventSchema — plan.budget.warn', () => {
+  it('parses a valid plan.budget.warn event', () => {
+    const ev = {
+      ts: '2026-04-20T12:00:00Z',
+      kind: 'plan.budget.warn',
+      blockedCount: 3,
+      threshold: 3,
+    };
+    const result = EventSchema.safeParse(ev);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toMatchObject({
+        kind: 'plan.budget.warn',
+        blockedCount: 3,
+        threshold: 3,
+      });
+    }
+  });
+
+  it('rejects a plan.budget.warn event missing blockedCount', () => {
+    const ev = {
+      ts: '2026-04-20T12:00:00Z',
+      kind: 'plan.budget.warn',
+      threshold: 3,
+    };
+    expect(EventSchema.safeParse(ev).success).toBe(false);
+  });
+
+  it('rejects a plan.budget.warn event with negative blockedCount', () => {
+    const ev = {
+      ts: '2026-04-20T12:00:00Z',
+      kind: 'plan.budget.warn',
+      blockedCount: -1,
+      threshold: 3,
+    };
+    expect(EventSchema.safeParse(ev).success).toBe(false);
+  });
+
+  it('allows extra fields (passthrough)', () => {
+    const ev = {
+      ts: '2026-04-20T12:00:00Z',
+      kind: 'plan.budget.warn',
+      blockedCount: 3,
+      threshold: 3,
+      extra: 'allowed',
+    };
+    expect(EventSchema.safeParse(ev).success).toBe(true);
+  });
+});
+
+describe('EventSchema — plan.budget.exhausted', () => {
+  it('parses a valid plan.budget.exhausted event', () => {
+    const ev = {
+      ts: '2026-04-20T12:00:00Z',
+      kind: 'plan.budget.exhausted',
+      blockedCount: 5,
+      threshold: 5,
+    };
+    const result = EventSchema.safeParse(ev);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toMatchObject({
+        kind: 'plan.budget.exhausted',
+        blockedCount: 5,
+        threshold: 5,
+      });
+    }
+  });
+
+  it('rejects a plan.budget.exhausted event missing threshold', () => {
+    const ev = {
+      ts: '2026-04-20T12:00:00Z',
+      kind: 'plan.budget.exhausted',
+      blockedCount: 5,
+    };
+    expect(EventSchema.safeParse(ev).success).toBe(false);
+  });
+
+  it('rejects a plan.budget.exhausted event with negative threshold', () => {
+    const ev = {
+      ts: '2026-04-20T12:00:00Z',
+      kind: 'plan.budget.exhausted',
+      blockedCount: 5,
+      threshold: -1,
+    };
+    expect(EventSchema.safeParse(ev).success).toBe(false);
+  });
+
+  it('allows extra fields (passthrough)', () => {
+    const ev = {
+      ts: '2026-04-20T12:00:00Z',
+      kind: 'plan.budget.exhausted',
+      blockedCount: 5,
+      threshold: 5,
+      extra: 'allowed',
+    };
+    expect(EventSchema.safeParse(ev).success).toBe(true);
+  });
+});

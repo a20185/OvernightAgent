@@ -566,6 +566,25 @@ const DaemonSignal = EventBase.extend({
   signal: z.string(),
 }).passthrough();
 
+// ADR-0015 — Emitted when the error-budget warn threshold is crossed.
+// `blockedCount` is the current count of blocked/failed tasks; `threshold`
+// echoes the configured `warnAfter` value so consumers don't need to look it
+// up.  `.passthrough()` matches the other variants (see TODO(phase-7) above).
+const PlanBudgetWarn = EventBase.extend({
+  kind: z.literal('plan.budget.warn'),
+  blockedCount: z.number().int().nonnegative(),
+  threshold: z.number().int().nonnegative(),
+}).passthrough();
+
+// ADR-0015 — Emitted when the error-budget stop threshold is crossed and the
+// run is about to be aborted.  Same shape as `plan.budget.warn` but signals
+// terminal exhaustion.
+const PlanBudgetExhausted = EventBase.extend({
+  kind: z.literal('plan.budget.exhausted'),
+  blockedCount: z.number().int().nonnegative(),
+  threshold: z.number().int().nonnegative(),
+}).passthrough();
+
 export const EventSchema = z.discriminatedUnion('kind', [
   RunStart,
   RunStop,
@@ -596,6 +615,8 @@ export const EventSchema = z.discriminatedUnion('kind', [
   StepEnd,
   ReferenceDriftDetected,
   DaemonSignal,
+  PlanBudgetWarn,
+  PlanBudgetExhausted,
 ]);
 
 // -----------------------------------------------------------------------------
