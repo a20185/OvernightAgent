@@ -67,4 +67,59 @@ describe('renderSummary', () => {
     expect(md).toContain('# SUMMARY — p_fw');
     expect(md).not.toContain('future.kind');
   });
+
+  it('marks a step that stalled then recovered with ⚠ stalled', () => {
+    const events = [
+      { ts: '2026-04-20T00:00:00Z', kind: 'run.start' },
+      { ts: '2026-04-20T00:00:05Z', kind: 'task.start', taskId: 't_A' },
+      { ts: '2026-04-20T00:00:10Z', kind: 'step.start', taskId: 't_A', stepN: 1 },
+      { ts: '2026-04-20T00:00:11Z', kind: 'step.attempt.start', taskId: 't_A', stepN: 1, attempt: 1 },
+      { ts: '2026-04-20T00:00:20Z', kind: 'step.attempt.start', taskId: 't_A', stepN: 1, attempt: 2 },
+      { ts: '2026-04-20T00:00:30Z', kind: 'step.attempt.start', taskId: 't_A', stepN: 1, attempt: 3 },
+      // step.stall fires at attempt=3 (crossing soft threshold)
+      { ts: '2026-04-20T00:00:35Z', kind: 'step.stall', taskId: 't_A', stepN: 1, attempt: 3, soft: 3, hard: 5 },
+      // ... but eventually succeeds
+      { ts: '2026-04-20T00:01:00Z', kind: 'step.end', taskId: 't_A', stepN: 1, status: 'done' },
+      { ts: '2026-04-20T00:01:05Z', kind: 'task.end', taskId: 't_A', status: 'done' },
+      { ts: '2026-04-20T00:01:10Z', kind: 'run.stop', reason: 'done' },
+    ];
+    const md = renderSummary({ planId: 'p_stall_recover', events });
+    // The step row should show "done ⚠ stalled"
+    expect(md).toMatch(/\| 1 \| done ⚠ stalled \|/);
+  });
+
+  it('marks a step that stalled then blocked with ⚠ stalled→blocked', () => {
+    const events = [
+      { ts: '2026-04-20T00:00:00Z', kind: 'run.start' },
+      { ts: '2026-04-20T00:00:05Z', kind: 'task.start', taskId: 't_B' },
+      { ts: '2026-04-20T00:00:10Z', kind: 'step.start', taskId: 't_B', stepN: 1 },
+      { ts: '2026-04-20T00:00:11Z', kind: 'step.attempt.start', taskId: 't_B', stepN: 1, attempt: 1 },
+      { ts: '2026-04-20T00:00:20Z', kind: 'step.attempt.start', taskId: 't_B', stepN: 1, attempt: 2 },
+      { ts: '2026-04-20T00:00:30Z', kind: 'step.attempt.start', taskId: 't_B', stepN: 1, attempt: 3 },
+      { ts: '2026-04-20T00:00:35Z', kind: 'step.stall', taskId: 't_B', stepN: 1, attempt: 3, soft: 3, hard: 5 },
+      // exhausted all attempts, ended blocked
+      { ts: '2026-04-20T00:01:00Z', kind: 'step.end', taskId: 't_B', stepN: 1, status: 'blocked' },
+      { ts: '2026-04-20T00:01:05Z', kind: 'task.end', taskId: 't_B', status: 'blocked-needs-human' },
+      { ts: '2026-04-20T00:01:10Z', kind: 'run.stop', reason: 'partial' },
+    ];
+    const md = renderSummary({ planId: 'p_stall_blocked', events });
+    // The step row should show "blocked ⚠ stalled→blocked"
+    expect(md).toMatch(/\| 1 \| blocked ⚠ stalled→blocked \|/);
+  });
+
+  it('does not add stall marker when no step.stall event exists', () => {
+    const events = [
+      { ts: '2026-04-20T00:00:00Z', kind: 'run.start' },
+      { ts: '2026-04-20T00:00:05Z', kind: 'task.start', taskId: 't_A' },
+      { ts: '2026-04-20T00:00:10Z', kind: 'step.start', taskId: 't_A', stepN: 1 },
+      { ts: '2026-04-20T00:00:11Z', kind: 'step.attempt.start', taskId: 't_A', stepN: 1, attempt: 1 },
+      { ts: '2026-04-20T00:01:00Z', kind: 'step.end', taskId: 't_A', stepN: 1, status: 'done' },
+      { ts: '2026-04-20T00:01:05Z', kind: 'task.end', taskId: 't_A', status: 'done' },
+      { ts: '2026-04-20T00:01:10Z', kind: 'run.stop', reason: 'done' },
+    ];
+    const md = renderSummary({ planId: 'p_no_stall', events });
+    // Normal step row — no stall marker
+    expect(md).toMatch(/\| 1 \| done \|/);
+    expect(md).not.toContain('⚠');
+  });
 });

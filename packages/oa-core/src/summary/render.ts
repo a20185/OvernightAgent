@@ -24,6 +24,7 @@ interface PerTaskAccum {
   stepsStarted: Map<number, number>; // stepN -> startedAtMs
   stepsFinal: Map<number, string>; // stepN -> final status
   stepsAttempts: Map<number, number>; // stepN -> attempt count
+  stepsStalled: Map<number, boolean>; // stepN -> saw step.stall
   bootstrapStartedAtMs: number | null;
   bootstrapEndedAtMs: number | null;
   bootstrapOk: boolean | null;
@@ -77,6 +78,7 @@ export function renderSummary(opts: RenderSummaryOpts): string {
         stepsStarted: new Map(),
         stepsFinal: new Map(),
         stepsAttempts: new Map(),
+        stepsStalled: new Map(),
         bootstrapStartedAtMs: null,
         bootstrapEndedAtMs: null,
         bootstrapOk: null,
@@ -154,6 +156,13 @@ export function renderSummary(opts: RenderSummaryOpts): string {
         if (attempt > prev) t.stepsAttempts.set(stepN, attempt);
         break;
       }
+      case 'step.stall': {
+        const taskId = typeof e.taskId === 'string' ? e.taskId : null;
+        const stepN = typeof e.stepN === 'number' ? e.stepN : null;
+        if (taskId === null || stepN === null) break;
+        tk(taskId).stepsStalled.set(stepN, true);
+        break;
+      }
       case 'step.verify.review.fail': {
         const taskId = typeof e.taskId === 'string' ? e.taskId : null;
         const stepN = typeof e.stepN === 'number' ? e.stepN : null;
@@ -227,11 +236,20 @@ export function renderSummary(opts: RenderSummaryOpts): string {
     for (const n of allSteps) {
       const status = t.stepsFinal.get(n) ?? '(in-flight)';
       const attempts = t.stepsAttempts.get(n) ?? 0;
+      const stalled = t.stepsStalled.get(n) === true;
+      let statusCol = status;
+      if (stalled) {
+        if (status === 'done') {
+          statusCol = 'done ⚠ stalled';
+        } else if (status === 'blocked') {
+          statusCol = 'blocked ⚠ stalled→blocked';
+        }
+      }
       const stepDirRel = `${linkBase}/${taskId}/step-${String(n).padStart(2, '0')}`;
       const promptRel = `${stepDirRel}/attempt-01/prompt.md`;
       const stdoutRel = `${stepDirRel}/attempt-01/stdout.log`;
       lines.push(
-        `| ${String(n)} | ${status} | ${String(attempts)} | [prompt](${promptRel}) | [stdout](${stdoutRel}) |`,
+        `| ${String(n)} | ${statusCol} | ${String(attempts)} | [prompt](${promptRel}) | [stdout](${stdoutRel}) |`,
       );
     }
     lines.push('');
