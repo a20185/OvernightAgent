@@ -380,6 +380,11 @@ async function runStep(
         promptPath,
         model: intake.executor.model,
         extraArgs: intake.executor.extraArgs,
+        env: {
+          ...process.env as Record<string, string>,
+          OA_TASK_DIR: taskFolder,
+          OA_CURRENT_PROMPT: promptPath,
+        },
         timeoutSec: intake.strategy.stepTimeoutSec,
         stdoutCapBytes: intake.strategy.stepStdoutCapBytes,
         stdoutPath,

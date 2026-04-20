@@ -826,6 +826,49 @@ describe('runPlan integration (Task 7.3)', () => {
     expect(last.reason).toBe('user');
   });
 
+  // Task 2.4 — OA_TASK_DIR + OA_CURRENT_PROMPT env vars are passed to the
+  // worker adapter via opts.env. This test captures the env from the mock
+  // adapter and asserts both vars are present with correct absolute values.
+  it('passes OA_TASK_DIR and OA_CURRENT_PROMPT env vars to worker adapter', async () => {
+    const f = await makeTaskFixture(REPO, REVIEWER_PROMPT, { stepCount: 1 });
+    const sealed = await plan.create({ taskListIds: [f.taskId] });
+
+    let capturedEnv: Record<string, string> | undefined;
+    let capturedPromptPath: string | undefined;
+
+    const worker: MockAdapter = {
+      id: 'claude',
+      defaultModel: 'opus',
+      capabilities: () => ({ supportsSessionId: false, supportsStructuredOutput: false }),
+      async run(opts: AgentRunOpts): Promise<AgentRunResult> {
+        capturedEnv = opts.env;
+        capturedPromptPath = opts.promptPath;
+        await fs.writeFile(opts.stdoutPath, `done\n${OK_STATUS_BLOCK}\n`, 'utf8');
+        await fs.writeFile(opts.stderrPath, '');
+        await commitWork(opts.cwd, 'env-test');
+        return { exitCode: 0, durationMs: 1, timedOut: false, stdoutCapHit: false, killedBy: null };
+      },
+      callCount: () => 1,
+    };
+    const reviewer = makeStubAdapter([{ stdoutBody: EMPTY_REVIEW_BLOCK }]);
+
+    const r = await runPlan({
+      planId: sealed.id,
+      signal: new AbortController().signal,
+      workerAdapterFactory: () => worker,
+      reviewerAdapterFactory: () => reviewer,
+    });
+
+    expect(r.outcome).toBe('done');
+
+    // The env field must be present and contain both OA_ vars.
+    expect(capturedEnv).toBeDefined();
+    expect(capturedEnv!.OA_TASK_DIR).toBe(f.taskFolder);
+    expect(capturedEnv!.OA_CURRENT_PROMPT).toBe(capturedPromptPath);
+    expect(path.isAbsolute(capturedEnv!.OA_TASK_DIR!)).toBe(true);
+    expect(path.isAbsolute(capturedEnv!.OA_CURRENT_PROMPT!)).toBe(true);
+  });
+
   it('force stop now during reviewer kill marks the step pending and exits', async () => {
     const f = await makeTaskFixture(REPO, REVIEWER_PROMPT, { stepCount: 1 });
     const sealed = await plan.create({ taskListIds: [f.taskId] });
