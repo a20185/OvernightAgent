@@ -39,6 +39,8 @@ export interface AgentRunOpts {
   stderrPath: string;
   signal: AbortSignal;
   onSpawned?: (control: AgentRunControl) => void;
+  /** Absolute path to a per-attempt sandbox-exec profile (macOS only). See ADR-0016. */
+  sandboxProfile?: string;
 }
 
 export interface AgentRunControl {

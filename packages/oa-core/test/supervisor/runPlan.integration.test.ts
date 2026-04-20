@@ -109,6 +109,8 @@ interface FixtureOpts {
   reviewerPromptPath?: string;
   onFailure?: 'halt' | 'skip' | 'markBlocked';
   maxLoops?: number;
+  sandboxEnabled?: boolean;
+  sandboxExtraAllowPaths?: string[];
 }
 
 interface Fixture {
@@ -172,6 +174,9 @@ async function makeTaskFixture(
       stepStdoutCapBytes: 1_000_000,
     },
     references: [],
+    ...(o.sandboxEnabled
+      ? { sandbox: { enabled: true, extraAllowPaths: o.sandboxExtraAllowPaths ?? [] } }
+      : {}),
   };
 
   await writeJsonAtomic(path.resolve(folder, 'intake.json'), intake);
@@ -1067,6 +1072,98 @@ describe('runPlan integration (Task 7.3)', () => {
     const linkTarget = await fs.readlink(symlinkPath);
     expect(path.isAbsolute(linkTarget)).toBe(true);
     expect(linkTarget).toMatch(/[/\\]2[/\\]prompt\.md$/);
+  });
+
+  // Task 5.3 — When intake.sandbox.enabled is true, the supervisor materializes
+  // a per-attempt sandbox.sb file under the attempt dir and passes its absolute
+  // path as opts.sandboxProfile to the worker adapter.
+  it('sandbox enabled: renders per-attempt sandbox.sb and passes it to worker adapter', async () => {
+    const f = await makeTaskFixture(REPO, REVIEWER_PROMPT, {
+      stepCount: 1,
+      sandboxEnabled: true,
+      sandboxExtraAllowPaths: [TMP],
+    });
+    const sealed = await plan.create({ taskListIds: [f.taskId] });
+
+    let capturedSandboxProfile: string | undefined;
+
+    const worker: MockAdapter = {
+      id: 'claude',
+      defaultModel: 'opus',
+      capabilities: () => ({ supportsSessionId: false, supportsStructuredOutput: false }),
+      async run(opts: AgentRunOpts): Promise<AgentRunResult> {
+        capturedSandboxProfile = opts.sandboxProfile;
+        await fs.writeFile(opts.stdoutPath, `done\n${OK_STATUS_BLOCK}\n`, 'utf8');
+        await fs.writeFile(opts.stderrPath, '');
+        await commitWork(opts.cwd, 'sandbox-test');
+        return { exitCode: 0, durationMs: 1, timedOut: false, stdoutCapHit: false, killedBy: null };
+      },
+      callCount: () => 1,
+    };
+    const reviewer = makeStubAdapter([{ stdoutBody: EMPTY_REVIEW_BLOCK }]);
+
+    const r = await runPlan({
+      planId: sealed.id,
+      signal: new AbortController().signal,
+      workerAdapterFactory: () => worker,
+      reviewerAdapterFactory: () => reviewer,
+    });
+
+    expect(r.outcome).toBe('done');
+
+    // The sandboxProfile must be an absolute path ending with sandbox.sb.
+    expect(capturedSandboxProfile).toBeDefined();
+    expect(path.isAbsolute(capturedSandboxProfile!)).toBe(true);
+    expect(capturedSandboxProfile).toMatch(/sandbox\.sb$/);
+
+    // The file must exist on disk at the expected per-attempt path.
+    const expectedSbPath = path.resolve(
+      runDir(sealed.id),
+      'steps',
+      f.taskId,
+      '1',
+      '1',
+      'sandbox.sb',
+    );
+    expect(capturedSandboxProfile).toBe(expectedSbPath);
+    const sbContent = await fs.readFile(expectedSbPath, 'utf8');
+    // The rendered profile must contain the worktree path and the default-deny header.
+    expect(sbContent).toContain('(deny default)');
+    const wtRoot = worktreeDir(f.taskId);
+    expect(sbContent).toContain(wtRoot);
+  });
+
+  // Task 5.3 — When sandbox is not enabled (default), sandboxProfile must be undefined.
+  it('sandbox disabled: sandboxProfile is undefined on worker adapter', async () => {
+    const f = await makeTaskFixture(REPO, REVIEWER_PROMPT, { stepCount: 1 });
+    const sealed = await plan.create({ taskListIds: [f.taskId] });
+
+    let capturedSandboxProfile: string | undefined;
+
+    const worker: MockAdapter = {
+      id: 'claude',
+      defaultModel: 'opus',
+      capabilities: () => ({ supportsSessionId: false, supportsStructuredOutput: false }),
+      async run(opts: AgentRunOpts): Promise<AgentRunResult> {
+        capturedSandboxProfile = opts.sandboxProfile;
+        await fs.writeFile(opts.stdoutPath, `done\n${OK_STATUS_BLOCK}\n`, 'utf8');
+        await fs.writeFile(opts.stderrPath, '');
+        await commitWork(opts.cwd, 'no-sandbox');
+        return { exitCode: 0, durationMs: 1, timedOut: false, stdoutCapHit: false, killedBy: null };
+      },
+      callCount: () => 1,
+    };
+    const reviewer = makeStubAdapter([{ stdoutBody: EMPTY_REVIEW_BLOCK }]);
+
+    const r = await runPlan({
+      planId: sealed.id,
+      signal: new AbortController().signal,
+      workerAdapterFactory: () => worker,
+      reviewerAdapterFactory: () => reviewer,
+    });
+
+    expect(r.outcome).toBe('done');
+    expect(capturedSandboxProfile).toBeUndefined();
   });
 
   // Task 4.4 — Error budget: 3 tasks, all blocked. warnAfter=1, stopAfter=2.

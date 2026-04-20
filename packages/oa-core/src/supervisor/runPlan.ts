@@ -1,4 +1,5 @@
 import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { once } from 'node:events';
 import type { Server } from 'node:net';
@@ -32,6 +33,7 @@ import { readAll } from '../events/reader.js';
 import { getAdapter } from '../adapter/registry.js';
 import { serve } from './controlSocket.js';
 import type { AgentAdapter, AgentRunControl } from '../adapter/types.js';
+import { renderSandboxProfile } from '../sandbox/render.js';
 
 /**
  * Task 7.3 — Supervisor outer loop (sequential v0).
@@ -398,6 +400,22 @@ async function runStep(
       break;
     }
 
+    // ADR-0016: materialize per-attempt sandbox profile on macOS when
+    // intake.sandbox.enabled is true. The profile is written atomically to
+    // <attemptDir>/sandbox.sb and its absolute path is passed through to
+    // the adapter via opts.sandboxProfile.
+    let sandboxProfilePath: string | undefined;
+    if (intake.sandbox?.enabled && process.platform === 'darwin') {
+      const sbPath = path.resolve(dir, 'sandbox.sb');
+      const profile = renderSandboxProfile({
+        worktreeAbs: worktreeInfo.absRoot,
+        homeAbs: await fs.realpath(path.resolve(os.homedir())),
+        extraAllowPaths: intake.sandbox.extraAllowPaths ?? [],
+      });
+      await writeFileAtomic(sbPath, profile);
+      sandboxProfilePath = sbPath;
+    }
+
     let workerResult;
     const workerStart = Date.now();
     try {
@@ -419,6 +437,7 @@ async function runStep(
         onSpawned: (control) => {
           runtime.activeSpawn = control;
         },
+        ...(sandboxProfilePath !== undefined ? { sandboxProfile: sandboxProfilePath } : {}),
       });
     } finally {
       runtime.activeSpawn = null;
