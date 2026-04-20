@@ -323,6 +323,21 @@ const PlanOverridesSchema = z
   })
   .passthrough();
 
+// ADR-0015 — Error budget for plan-level stall / failure tolerance.
+// `warnAfter` is the number of failed tasks after which the supervisor emits a
+// warning; `stopAfter` is the threshold at which the run is aborted. Both are
+// optional — omitting either means "no threshold for that level". When both are
+// present, `warnAfter <= stopAfter` is enforced so the warn fires before the stop.
+const ErrorBudgetSchema = z
+  .object({
+    warnAfter: z.number().int().nonnegative().optional(),
+    stopAfter: z.number().int().nonnegative().optional(),
+  })
+  .refine(
+    (b) => b.warnAfter === undefined || b.stopAfter === undefined || b.warnAfter <= b.stopAfter,
+    { message: 'warnAfter must be <= stopAfter' },
+  );
+
 export const PlanSchema = z.object({
   schemaVersion: z.literal(1),
   id: IdSchema,
@@ -330,6 +345,7 @@ export const PlanSchema = z.object({
   status: PlanStatus,
   taskListIds: z.array(IdSchema),
   overrides: PlanOverridesSchema,
+  errorBudget: ErrorBudgetSchema.optional(),
 });
 
 // -----------------------------------------------------------------------------

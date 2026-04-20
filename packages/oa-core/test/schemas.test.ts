@@ -348,6 +348,37 @@ describe('PlanSchema', () => {
     plan.taskListIds = ['..'];
     expect(PlanSchema.safeParse(plan).success).toBe(false);
   });
+
+  it('parses an existing sealed plan without errorBudget (v0.1.0 shape)', () => {
+    // Simulates a plan written by v0.1.0 that lacks the errorBudget field.
+    const plan = validPlan();
+    expect(plan.errorBudget).toBeUndefined();
+    const result = PlanSchema.safeParse(plan);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.errorBudget).toBeUndefined();
+    }
+  });
+
+  it('accepts errorBudget with only warnAfter or only stopAfter', () => {
+    const plan1 = validPlan();
+    plan1.errorBudget = { warnAfter: 2 };
+    expect(PlanSchema.safeParse(plan1).success).toBe(true);
+
+    const plan2 = validPlan();
+    plan2.errorBudget = { stopAfter: 5 };
+    expect(PlanSchema.safeParse(plan2).success).toBe(true);
+  });
+
+  it('rejects errorBudget where warnAfter > stopAfter', () => {
+    const plan = validPlan();
+    plan.errorBudget = { warnAfter: 5, stopAfter: 3 };
+    const result = PlanSchema.safeParse(plan);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.some((i) => /warnAfter/.test(i.message))).toBe(true);
+    }
+  });
 });
 
 // -----------------------------------------------------------------------------
