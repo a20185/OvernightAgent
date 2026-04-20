@@ -511,6 +511,21 @@ const StepStdoutCapHit = EventBase.extend({
   ...attemptRef,
 }).passthrough();
 
+// ADR-0015 — emitted when attempt count crosses a stall-detection threshold.
+// `soft` and `hard` carry the resolved thresholds so downstream consumers
+// (SUMMARY renderer, `oa status`) can report stall state without re-deriving
+// from config.  All load-bearing fields are pinned; `.passthrough()` is used
+// for consistency with the other variants (see TODO(phase-7) above for the
+// eventual switch to `.strict()`).
+const StepStall = EventBase.extend({
+  kind: z.literal('step.stall'),
+  taskId: IdSchema,
+  stepN: z.number().int().nonnegative(),
+  attempt: z.number().int().positive(),
+  soft: z.number().int().positive(),
+  hard: z.number().int().positive(),
+}).passthrough();
+
 const StepAttemptEnd = EventBase.extend({
   kind: z.literal('step.attempt.end'),
   ...attemptRef,
@@ -559,6 +574,7 @@ export const EventSchema = z.discriminatedUnion('kind', [
   StepFixSynthesized,
   StepTimeout,
   StepStdoutCapHit,
+  StepStall,
   StepAttemptEnd,
   StepEnd,
   ReferenceDriftDetected,
