@@ -43,7 +43,7 @@ export function registerTailCommand(program: Command): void {
       let buffer = '';
       const drain = (chunk: Buffer | string): void => {
         buffer += chunk.toString();
-        while (true) {
+        for (;;) {
           const nl = buffer.indexOf('\n');
           if (nl < 0) break;
           const line = buffer.slice(0, nl);

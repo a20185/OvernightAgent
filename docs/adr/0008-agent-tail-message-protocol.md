@@ -53,8 +53,12 @@ agents that print intermediate fenced examples.
 - Negative: depends on agent compliance with the prompt instruction; mitigated
   because non-compliance is caught by the tail gate and triggers a retry within
   the fix-loop budget (or a clear `blocked-needs-human` outcome).
-- Neutral: the protocol block lives in `oa-core/prompts/protocol-status.md` and
-  `protocol-review.md` so it's edited in one place.
+- Neutral: the protocol blocks were originally slated to live as standalone
+  files (`oa-core/prompts/protocol-status.md` and `protocol-review.md`) but
+  are currently inlined as constants in `verify/context.ts` (status block)
+  and `verify/review.ts` (review block). Deferred extraction — acceptable
+  for v0 since the blocks are short and seldom edited. Revisit when
+  localization or per-adapter customization becomes a real requirement.
 
 ## Alternatives Considered
 
