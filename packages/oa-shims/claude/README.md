@@ -24,6 +24,22 @@ ln -s "$(pwd)/packages/oa-shims/claude/skills/oa-intake" .claude/skills/oa-intak
 - `/oa-plan [--from-queue|...]` — seal a plan from the queue.
 - `/oa-status [planId]` — live daemon status.
 
+## Compact-recovery hook
+
+When `oa shims install --host claude` runs, it also merges a hook into
+`.claude/settings.json` (project scope) or `~/.claude/settings.json` (user
+scope). The hook lives under `hooks.SessionStart` with the matcher `"compact"`
+and fires whenever Claude Code auto-compacts a session.
+
+**What it does:** the hook checks for `OA_TASK_DIR` (set by the supervisor).
+If present, it prints the task's `PROGRESS.md` and points the agent at the
+current prompt file (`$OA_CURRENT_PROMPT`), so the agent can pick up exactly
+where it left off instead of starting over.
+
+**Upgrading:** the hook command is tagged with the sentinel
+`# oa:hook=compact-recovery:v1`. Re-running `oa shims install` will find
+and replace the old hook in-place — no duplicates, no manual editing needed.
+
 ## Requirements
 
 - `oa` CLI installed on PATH (see repo root README or `pnpm add -g @soulerou/oa-cli`).

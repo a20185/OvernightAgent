@@ -139,6 +139,15 @@ oa shims install --host claude --force     # overwrite local edits
 You now get `/oa-intake`, `/oa-queue`, `/oa-plan`, `/oa-status` inside
 your host agent.
 
+**Compact-recovery hook (Claude Code).** When installed for the `claude`
+host, `oa shims install` also merges a `SessionStart[compact]` hook into
+`.claude/settings.json`. This hook fires automatically whenever Claude Code
+auto-compacts a session mid-task. It re-injects the current task context
+(`PROGRESS.md`, prompt path, and step pointer) so the agent can resume
+without losing its place. The hook is keyed by the sentinel
+`# oa:hook=compact-recovery:v1` — re-running `oa shims install` will
+upgrade it in-place without duplicating entries.
+
 ---
 
 ## Quick start
