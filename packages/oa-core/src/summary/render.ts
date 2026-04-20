@@ -55,15 +55,24 @@ export interface RenderSummaryOpts {
    * Defaults to `runs/<planId>` so links render from the repo root.
    */
   linkBase?: string;
+  /**
+   * Optional: task IDs that were skipped due to budget exhaustion.
+   * These tasks have no events in the stream; the renderer adds them
+   * to the task table with a "skipped (budget exhausted)" annotation.
+   */
+  skippedTaskIds?: string[];
 }
 
 export function renderSummary(opts: RenderSummaryOpts): string {
   const { planId, events } = opts;
   const linkBase = opts.linkBase ?? `runs/${planId}`;
+  const skippedTaskIds = opts.skippedTaskIds ?? [];
 
   let runStartMs: number | null = null;
   let runStopMs: number | null = null;
   let runStopReason: string | null = null;
+  let budgetExhaustedBlocked: number | null = null;
+  let budgetExhaustedThreshold: number | null = null;
   const tasks = new Map<string, PerTaskAccum>();
   const taskOrder: string[] = [];
 
@@ -181,6 +190,13 @@ export function renderSummary(opts: RenderSummaryOpts): string {
         }
         break;
       }
+      case 'plan.budget.exhausted': {
+        const bc = typeof e.blockedCount === 'number' ? e.blockedCount : null;
+        const th = typeof e.threshold === 'number' ? e.threshold : null;
+        if (bc !== null) budgetExhaustedBlocked = bc;
+        if (th !== null) budgetExhaustedThreshold = th;
+        break;
+      }
       default:
         break;
     }
@@ -198,6 +214,14 @@ export function renderSummary(opts: RenderSummaryOpts): string {
   );
   lines.push('');
 
+  // ADR-0015 — Budget-exhausted abort banner
+  if (budgetExhaustedBlocked !== null) {
+    const bc = String(budgetExhaustedBlocked);
+    const th = budgetExhaustedThreshold !== null ? String(budgetExhaustedThreshold) : '?';
+    lines.push(`> **PLAN ABORTED** — error budget exhausted (${bc}/${th} blocked)`);
+    lines.push('');
+  }
+
   lines.push('## Tasks');
   lines.push('');
   lines.push('| Task | Status | Duration | Steps (done/total) | Open issues |');
@@ -212,6 +236,12 @@ export function renderSummary(opts: RenderSummaryOpts): string {
     for (const s of t.stepsFinal.values()) if (s === 'done') done += 1;
     lines.push(
       `| ${taskId} | ${t.status ?? '(in-flight)'} | ${fmtDuration(dur)} | ${String(done)}/${String(totalSteps)} | ${String(t.openIssues.length)} |`,
+    );
+  }
+  // ADR-0015 — Skipped tasks (no events in stream, status from inbox)
+  for (const taskId of skippedTaskIds) {
+    lines.push(
+      `| ${taskId} | skipped (budget exhausted) | — | 0/0 | 0 |`,
     );
   }
   lines.push('');

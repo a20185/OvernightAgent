@@ -122,4 +122,70 @@ describe('renderSummary', () => {
     expect(md).toMatch(/\| 1 \| done \|/);
     expect(md).not.toContain('⚠');
   });
+
+  it('shows abort banner and skipped annotation for budget-exhausted plan', () => {
+    // Task 4.5 — 3 tasks: t_1 + t_2 block, t_3 skipped via budget exhaustion.
+    const events = [
+      { ts: '2026-04-20T00:00:00Z', kind: 'run.start' },
+      // Task 1 runs and blocks
+      { ts: '2026-04-20T00:00:05Z', kind: 'task.start', taskId: 't_1' },
+      { ts: '2026-04-20T00:00:10Z', kind: 'step.start', taskId: 't_1', stepN: 1 },
+      { ts: '2026-04-20T00:00:11Z', kind: 'step.attempt.start', taskId: 't_1', stepN: 1, attempt: 1 },
+      { ts: '2026-04-20T00:01:00Z', kind: 'step.end', taskId: 't_1', stepN: 1, status: 'blocked' },
+      { ts: '2026-04-20T00:01:05Z', kind: 'task.end', taskId: 't_1', status: 'blocked-needs-human' },
+      // Task 2 runs and blocks
+      { ts: '2026-04-20T00:01:10Z', kind: 'task.start', taskId: 't_2' },
+      { ts: '2026-04-20T00:01:15Z', kind: 'step.start', taskId: 't_2', stepN: 1 },
+      { ts: '2026-04-20T00:01:16Z', kind: 'step.attempt.start', taskId: 't_2', stepN: 1, attempt: 1 },
+      { ts: '2026-04-20T00:02:00Z', kind: 'step.end', taskId: 't_2', stepN: 1, status: 'blocked' },
+      { ts: '2026-04-20T00:02:05Z', kind: 'task.end', taskId: 't_2', status: 'blocked-needs-human' },
+      // Budget exhausted event fires
+      {
+        ts: '2026-04-20T00:02:06Z',
+        kind: 'plan.budget.exhausted',
+        blockedCount: 2,
+        threshold: 2,
+      },
+      // t_3 never started — no task.start/task.end events
+      { ts: '2026-04-20T00:02:10Z', kind: 'run.stop', reason: 'budget' },
+    ];
+    const md = renderSummary({
+      planId: 'p_budget',
+      events,
+      skippedTaskIds: ['t_3'],
+    });
+
+    // Banner present with blocked count
+    expect(md).toContain('PLAN ABORTED');
+    expect(md).toContain('error budget exhausted (2/2 blocked)');
+
+    // Skipped task listed in the task table with annotation
+    expect(md).toContain('t_3');
+    expect(md).toContain('skipped (budget exhausted)');
+
+    // Non-skipped tasks still rendered normally
+    expect(md).toContain('| t_1 | blocked-needs-human |');
+    expect(md).toContain('| t_2 | blocked-needs-human |');
+
+    // Banner appears before the Tasks table
+    const bannerIdx = md.indexOf('PLAN ABORTED');
+    const tasksIdx = md.indexOf('## Tasks');
+    expect(bannerIdx).toBeGreaterThan(-1);
+    expect(tasksIdx).toBeGreaterThan(-1);
+    expect(bannerIdx).toBeLessThan(tasksIdx);
+  });
+
+  it('omits abort banner when no budget-exhausted event', () => {
+    const events = [
+      { ts: '2026-04-20T00:00:00Z', kind: 'run.start' },
+      { ts: '2026-04-20T00:00:05Z', kind: 'task.start', taskId: 't_A' },
+      { ts: '2026-04-20T00:00:10Z', kind: 'step.start', taskId: 't_A', stepN: 1 },
+      { ts: '2026-04-20T00:01:00Z', kind: 'step.end', taskId: 't_A', stepN: 1, status: 'done' },
+      { ts: '2026-04-20T00:01:05Z', kind: 'task.end', taskId: 't_A', status: 'done' },
+      { ts: '2026-04-20T00:01:10Z', kind: 'run.stop', reason: 'done' },
+    ];
+    const md = renderSummary({ planId: 'p_ok', events });
+    expect(md).not.toContain('PLAN ABORTED');
+    expect(md).not.toContain('budget exhausted');
+  });
 });

@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import { Command } from 'commander';
-import { eventsReader, summary, runDir, writeFileAtomic } from '@soulerou/oa-core';
+import { eventsReader, summary, runDir, writeFileAtomic, inbox } from '@soulerou/oa-core';
 
 export function registerSummaryCommand(program: Command): void {
   program
@@ -13,7 +13,19 @@ export function registerSummaryCommand(program: Command): void {
         absPath: path.resolve(runDirAbs, 'events.jsonl'),
         onInvalid: () => undefined,
       });
-      const md = summary.renderSummary({ planId, events });
+      // ADR-0015 — collect skipped task IDs from the inbox so the renderer
+      // can annotate them (they have no events in the stream). Best-effort:
+      // if the inbox is empty or missing, skippedTaskIds stays [].
+      let skippedTaskIds: string[] = [];
+      try {
+        const allTasks = await inbox.list();
+        skippedTaskIds = allTasks
+          .filter((t) => t.status === 'skipped')
+          .map((t) => t.id);
+      } catch {
+        /* inbox may not exist in minimal/test setups */
+      }
+      const md = summary.renderSummary({ planId, events, skippedTaskIds });
       if (opts.stdout === true) {
         process.stdout.write(md);
         return;

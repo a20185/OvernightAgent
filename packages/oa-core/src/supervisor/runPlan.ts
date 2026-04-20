@@ -729,6 +729,7 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
   const taskOutcomes: RunPlanResult['taskOutcomes'] = [];
   let events: EventWriter | null = null;
   let controlServer: Server | null = null;
+  const skippedTaskIds: string[] = [];
   try {
     // (4) Open the events writer. validate:false keeps the hot path lean; the
     //     EventSchema test suite covers shape drift in CI.
@@ -1105,6 +1106,7 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
       for (const tid of sealed.taskListIds) {
         if (!completedTaskIds.has(tid)) {
           await inbox.setStatus(tid, 'skipped');
+          skippedTaskIds.push(tid);
         }
       }
     }
@@ -1162,7 +1164,7 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
       const { renderSummary } = await import('../summary/render.js');
       const eventsPath = opts.eventsPath ?? path.resolve(runDirAbs, 'events.jsonl');
       const readEvents = await readAll({ absPath: eventsPath, onInvalid: () => undefined });
-      const md = renderSummary({ planId: opts.planId, events: readEvents });
+      const md = renderSummary({ planId: opts.planId, events: readEvents, skippedTaskIds });
       await writeFileAtomic(path.resolve(runDirAbs, 'SUMMARY.md'), md);
     } catch {
       /* best-effort render; never hide the real outcome */
