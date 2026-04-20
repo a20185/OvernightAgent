@@ -60,6 +60,18 @@ export interface WorktreeInfo {
  * via the namespace re-export from `index.ts`. Future revisions may consolidate
  * create + rewindToHead + remove into a `WorktreeManager` class.
  */
+/**
+ * Deterministic branch name derivation shared by `create()` and `adopt()`. The
+ * resume path (Task 7.8) needs to reconstruct a `WorktreeInfo` for an
+ * already-created worktree; centralizing the naming rule here keeps the two
+ * paths in lockstep and forbids accidental drift.
+ */
+function computeBranchName(taskId: string, taskTitle: string): string {
+  const fragment = slug(taskTitle) || 'untitled';
+  const shortId = taskId.slice(-6);
+  return `oa/${fragment}-${shortId}`;
+}
+
 export async function create(opts: CreateWorktreeOpts): Promise<WorktreeInfo> {
   assertId(opts.taskId);
   assertAbs(opts.repoDir);
@@ -70,9 +82,7 @@ export async function create(opts: CreateWorktreeOpts): Promise<WorktreeInfo> {
     throw new Error('taskTitle must be a string');
   }
 
-  const fragment = slug(opts.taskTitle) || 'untitled';
-  const shortId = opts.taskId.slice(-6);
-  const branch = `oa/${fragment}-${shortId}`;
+  const branch = computeBranchName(opts.taskId, opts.taskTitle);
   const absRoot = worktreeDir(opts.taskId);
 
   // `git worktree add` will not create intermediate directories above the
@@ -111,6 +121,54 @@ export async function create(opts: CreateWorktreeOpts): Promise<WorktreeInfo> {
     );
   }
 
+  return { absRoot, branch, repoDir: opts.repoDir };
+}
+
+/**
+ * Resume-path twin of `create()`. Reconstructs a `WorktreeInfo` for an
+ * already-created worktree *without* calling `git worktree add`. Used by the
+ * supervisor's resume protocol (Task 7.8, ADR-0003) when a prior run had
+ * already bootstrapped the worktree before being interrupted; calling
+ * `create()` again would throw on the EEXIST pre-check.
+ *
+ * The branch name is derived from the same `computeBranchName` helper used by
+ * `create()`, so the two paths are guaranteed to produce identical info for
+ * the same `(taskId, taskTitle)` pair.
+ *
+ * Boundary contract matches `create()`:
+ *  - `taskId` must be a legal id (`assertId`).
+ *  - `repoDir` must be absolute (`assertAbs`).
+ *  - `taskTitle` must be a string.
+ *
+ * Preconditions:
+ *  - `worktreeDir(taskId)` must already exist as a directory. If it does not,
+ *    the caller should fall through to `create()`. This refuses to stat-guess
+ *    its way around the contract; the runPlan adopt-or-create wrapper decides.
+ *
+ * Intentionally does NOT verify the git state under `absRoot` (that it's a
+ * real worktree, that the branch name matches HEAD, etc.). Subsequent
+ * `rewindToHead` and `resetToSha` calls through simple-git will surface any
+ * deviation with a clear error.
+ */
+export async function adopt(opts: CreateWorktreeOpts): Promise<WorktreeInfo> {
+  assertId(opts.taskId);
+  assertAbs(opts.repoDir);
+  if (typeof opts.taskTitle !== 'string') {
+    throw new Error('taskTitle must be a string');
+  }
+  const branch = computeBranchName(opts.taskId, opts.taskTitle);
+  const absRoot = worktreeDir(opts.taskId);
+  try {
+    const st = await fs.stat(absRoot);
+    if (!st.isDirectory()) {
+      throw new Error(`worktree.adopt: ${absRoot} exists but is not a directory`);
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(`worktree.adopt: no worktree at ${absRoot} (caller should create())`);
+    }
+    throw err;
+  }
   return { absRoot, branch, repoDir: opts.repoDir };
 }
 

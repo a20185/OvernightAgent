@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import type { Server } from 'node:net';
 import { simpleGit } from 'simple-git';
 import { writeFileAtomic } from '../atomicJson.js';
-import { runDir, socketPath, taskDir } from '../paths.js';
+import { runDir, socketPath, taskDir, worktreeDir } from '../paths.js';
 import { readJson } from '../atomicJson.js';
 import {
   IntakeSchema,
@@ -757,6 +757,27 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
         break;
       }
 
+      // Resume-safety: if the inbox already shows this task at a terminal
+      // status, skip it entirely. Without this guard, a resumePlan() against a
+      // plan whose earlier tasks already landed 'done' (or 'failed' / other
+      // terminal statuses) would unconditionally flip the inbox row back to
+      // 'running' and re-invoke `worktree.create(...)`, which would throw on
+      // the existing worktree dir. Terminal-status tasks do not appear in the
+      // returned per-task outcome list on this run — they contributed their
+      // outcome on the prior run — which also preserves the identity of
+      // `taskOutcomes` as "what happened THIS run".
+      const existingInbox = await inbox.get(taskId);
+      if (
+        existingInbox !== null &&
+        (existingInbox.status === 'done' ||
+          existingInbox.status === 'failed' ||
+          existingInbox.status === 'blocked-needs-human' ||
+          existingInbox.status === 'bootstrap-failed' ||
+          existingInbox.status === 'budget-exhausted')
+      ) {
+        continue;
+      }
+
       const taskFolder = taskDir(taskId);
       const intake = await loadIntake(taskFolder);
       const stepsDoc = await loadSteps(taskFolder);
@@ -769,13 +790,33 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
       runtime.currentStepStartedAt = null;
       runtime.currentAttempt = null;
 
-      // Worktree.
-      const wt = await worktree.create({
-        taskId,
-        repoDir: intake.project.dir,
-        baseBranch: intake.project.baseBranch,
-        taskTitle: intake.title,
-      });
+      // Worktree. Adopt-or-create: if the worktree dir already exists on
+      // disk, we're on the resume path (Task 7.8) — the prior supervisor run
+      // had already bootstrapped this task before being interrupted.
+      // `worktree.adopt` reconstructs the info without calling `git worktree
+      // add` (which would throw on the EEXIST pre-check). resumePlan has
+      // already rewound the tree to HEAD before delegating back here.
+      const wtAbsRoot = worktreeDir(taskId);
+      let wtExists = false;
+      try {
+        await fs.access(wtAbsRoot);
+        wtExists = true;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+      const wt = wtExists
+        ? await worktree.adopt({
+            taskId,
+            repoDir: intake.project.dir,
+            baseBranch: intake.project.baseBranch,
+            taskTitle: intake.title,
+          })
+        : await worktree.create({
+            taskId,
+            repoDir: intake.project.dir,
+            baseBranch: intake.project.baseBranch,
+            taskTitle: intake.title,
+          });
 
       // Bootstrap. v0 onFailure semantics: bootstrap-failed = task fails. If
       // intake.strategy.onFailure === 'halt', the plan halts after this task;
@@ -834,6 +875,19 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
         };
       }
 
+      // Resume-safety: load prior `_progress.json` and compute the set of
+      // step numbers already marked 'done'. Those steps were completed during
+      // a previous supervisor run (the one whose checkpoint this call is
+      // resuming from), and re-executing them would duplicate their committed
+      // work and burn extra worker invocations. resumePlan flips in-flight
+      // steps back to 'pending' before delegating here, so the only 'done'
+      // entries we'll see are the genuinely-finished ones. A fresh run simply
+      // sees an empty doc and the set stays empty.
+      const priorProgress = await progress.read(taskFolder);
+      const alreadyDoneStepNs = new Set(
+        priorProgress.steps.filter((s) => s.status === 'done').map((s) => s.n),
+      );
+
       // Per-step inner loop.
       let stepsRun = 0;
       const stepResults: StepRunResult[] = [];
@@ -847,6 +901,15 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
       // remaining steps can't make progress without manual intervention.
       let taskBlockedByStep = false;
       for (const step of stepsDoc.steps) {
+        if (alreadyDoneStepNs.has(step.n)) {
+          // Already finished on a prior run — record a synthetic 'done'
+          // result so the aggregate reasoning below ('all done' vs 'any
+          // blocked') stays correct, but do NOT bump `stepsRun` (which is
+          // "work performed THIS run") and do NOT emit step.start/step.end
+          // events (they already landed in events.jsonl on the prior run).
+          stepResults.push({ outcome: 'done', attemptsRun: 0, finalReviewIssues: [] });
+          continue;
+        }
         if (supervisorAc.signal.aborted) {
           abortedReason = 'user';
           halted = true;
