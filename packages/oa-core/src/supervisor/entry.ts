@@ -3,11 +3,15 @@ import { pathToFileURL } from 'node:url';
 import { assertId } from '../ids.js';
 import { acquire, release } from './pidfile.js';
 import { runPlan } from './runPlan.js';
+import { resumePlan } from './resume.js';
 import type { RunPlanOpts } from './runPlan.js';
 
 export interface RunSupervisorEntryOpts {
   workerAdapterFactory?: RunPlanOpts['workerAdapterFactory'];
   reviewerAdapterFactory?: RunPlanOpts['reviewerAdapterFactory'];
+  /** When true, the entry calls `resumePlan` instead of `runPlan`. Used by
+   * `oa rerun --detach` (the launcher forwards `OA_RESUME=1` via env). */
+  resume?: boolean;
 }
 
 /**
@@ -67,16 +71,29 @@ export async function runSupervisorEntry(
     }
 
     try {
-      await runPlan({
-        planId,
-        signal: ac.signal,
-        ...(opts.workerAdapterFactory !== undefined
-          ? { workerAdapterFactory: opts.workerAdapterFactory }
-          : {}),
-        ...(opts.reviewerAdapterFactory !== undefined
-          ? { reviewerAdapterFactory: opts.reviewerAdapterFactory }
-          : {}),
-      });
+      if (opts.resume === true) {
+        await resumePlan({
+          planId,
+          signal: ac.signal,
+          ...(opts.workerAdapterFactory !== undefined
+            ? { workerAdapterFactory: opts.workerAdapterFactory }
+            : {}),
+          ...(opts.reviewerAdapterFactory !== undefined
+            ? { reviewerAdapterFactory: opts.reviewerAdapterFactory }
+            : {}),
+        });
+      } else {
+        await runPlan({
+          planId,
+          signal: ac.signal,
+          ...(opts.workerAdapterFactory !== undefined
+            ? { workerAdapterFactory: opts.workerAdapterFactory }
+            : {}),
+          ...(opts.reviewerAdapterFactory !== undefined
+            ? { reviewerAdapterFactory: opts.reviewerAdapterFactory }
+            : {}),
+        });
+      }
     } finally {
       if (ownsPidfile) {
         try {
@@ -109,7 +126,8 @@ if (mainArg && import.meta.url === pathToFileURL(mainArg).href) {
     process.exit(2);
   }
 
-  void runSupervisorEntry(planId).catch((err) => {
+  const resume = process.env.OA_RESUME === '1';
+  void runSupervisorEntry(planId, { resume }).catch((err) => {
     fs.writeSync(
       2,
       JSON.stringify({

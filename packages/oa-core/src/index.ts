@@ -199,3 +199,20 @@ export type {
   PlanOutcome,
   TaskOutcome,
 } from './supervisor/runPlan.js';
+// Resume protocol (Task 7.8 / ADR-0003). `resumePlan(planId)` detects a stale
+// pidfile, sweeps orphan temp files, rewinds in-flight worktrees, flips
+// in-flight steps back to pending, emits run.resume, then delegates to
+// runPlan. Phase 8's `oa rerun <planId>` wraps this.
+export { resumePlan } from './supervisor/resume.js';
+export type { ResumePlanOpts, ResumePlanResult } from './supervisor/resume.js';
+// Control socket request helper (Task 7.6 + 7.7). `oa stop` / `oa status` in
+// Phase 8 will open a client connection to the running daemon's socket and
+// send the appropriate JSON control message; `serve` is used internally by
+// runPlan only.
+export * as controlSocket from './supervisor/controlSocket.js';
+export type {
+  ControlRequest,
+  ControlReply,
+  StopRequest,
+  StatusRequest,
+} from './supervisor/controlSocket.js';
