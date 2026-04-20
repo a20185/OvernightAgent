@@ -24,11 +24,38 @@ export interface SpawnOpts {
   stderrPath: string;
   signal: AbortSignal;
   onSpawned?: (control: SpawnControl) => void;
+  /** Absolute path to a sandbox-exec profile. Darwin-only; throws on other platforms. */
+  sandboxProfile?: string;
 }
 
 export type SpawnControl = AgentRunControl;
 
 const SIGKILL_GRACE_MS = 500;
+
+/**
+ * Resolves the final command and args, wrapping with `sandbox-exec -f <profile>`
+ * when `sandboxProfile` is provided. Exported for direct unit-testing of the
+ * argv-mangling logic without spawning a real subprocess.
+ *
+ * @throws If `sandboxProfile` is set on a non-darwin platform.
+ */
+export function resolveSpawnArgs(
+  command: string,
+  args: string[],
+  sandboxProfile: string | undefined,
+): { command: string; args: string[] } {
+  if (sandboxProfile === undefined) {
+    return { command, args };
+  }
+  if (process.platform !== 'darwin') {
+    throw new Error(`sandbox-exec requested but unavailable on ${process.platform}`);
+  }
+  assertAbs(sandboxProfile);
+  return {
+    command: 'sandbox-exec',
+    args: ['-f', sandboxProfile, command, ...args],
+  };
+}
 
 /**
  * Low-level subprocess primitive every adapter wraps.
@@ -50,6 +77,10 @@ const SIGKILL_GRACE_MS = 500;
  * agent's headless output and overlay it on the returned result.
  */
 export async function spawnHeadless(opts: SpawnOpts): Promise<AgentRunResult> {
+  // Sandbox-exec argv wrapping — must happen before any fork so the platform
+  // check rejects synchronously on non-darwin hosts.
+  const resolved = resolveSpawnArgs(opts.command, opts.args, opts.sandboxProfile);
+
   assertAbs(opts.cwd);
   assertAbs(opts.stdoutPath);
   assertAbs(opts.stderrPath);
@@ -72,7 +103,7 @@ export async function spawnHeadless(opts: SpawnOpts): Promise<AgentRunResult> {
 
   const start = Date.now();
 
-  const subprocess = execa(opts.command, opts.args, {
+  const subprocess = execa(resolved.command, resolved.args, {
     cwd: opts.cwd,
     env: { ...process.env, ...opts.env },
     stdout: 'pipe',

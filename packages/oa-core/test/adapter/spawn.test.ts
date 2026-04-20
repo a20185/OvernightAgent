@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { spawnHeadless } from '../../src/adapter/spawn.js';
+import { spawnHeadless, resolveSpawnArgs } from '../../src/adapter/spawn.js';
 import type { SpawnControl } from '../../src/adapter/spawn.js';
 
 // -----------------------------------------------------------------------------
@@ -227,5 +227,38 @@ describe('spawnHeadless', () => {
     await expect(
       spawnHeadless({ ...base, cwd: TMP, stdoutPath, stderrPath: 'rel/stderr.log' }),
     ).rejects.toThrow(/non-absolute/);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// sandbox-exec argv wrapping (unit tests for resolveSpawnArgs)
+// -----------------------------------------------------------------------------
+
+describe('resolveSpawnArgs', () => {
+  const realPlatform = process.platform;
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: realPlatform });
+  });
+
+  it('returns argv unchanged when sandboxProfile is absent', () => {
+    const result = resolveSpawnArgs('/usr/bin/claude', ['--print', 'hi'], undefined);
+    expect(result.command).toBe('/usr/bin/claude');
+    expect(result.args).toEqual(['--print', 'hi']);
+  });
+
+  it('wraps argv with sandbox-exec -f <profile> on darwin', () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    const profilePath = '/tmp/test-profile.sb';
+    const result = resolveSpawnArgs('/usr/bin/claude', ['--print', 'hi'], profilePath);
+    expect(result.command).toBe('sandbox-exec');
+    expect(result.args).toEqual(['-f', profilePath, '/usr/bin/claude', '--print', 'hi']);
+  });
+
+  it('throws on non-darwin when sandboxProfile is set', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    expect(() =>
+      resolveSpawnArgs('/usr/bin/claude', ['--print', 'hi'], '/tmp/profile.sb'),
+    ).toThrow(/sandbox-exec requested but unavailable on linux/);
   });
 });
