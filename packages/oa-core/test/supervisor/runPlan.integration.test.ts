@@ -970,6 +970,61 @@ describe('runPlan integration (Task 7.3)', () => {
     expect(linkTarget).toMatch(/[/\\]1[/\\]prompt\.md$/);
   });
 
+  // Task 3.4 — step.stall is emitted exactly once per step when the attempt
+  // count crosses the soft threshold, even though the step continues to the
+  // hard limit. With maxLoops=4, soft=ceil(4*0.6)=3, hard=4. The always-failing
+  // adapter drives the step through all 4 attempts; step.stall fires at attempt=3
+  // and never again.
+  it('emits step.stall exactly once per step on soft-threshold crossing', async () => {
+    const f = await makeTaskFixture(REPO, REVIEWER_PROMPT, { stepCount: 1, maxLoops: 4 });
+    const sealed = await plan.create({ taskListIds: [f.taskId] });
+
+    // Always-failing worker: emits a tail block and commits so it reaches the
+    // reviewer, but the reviewer always returns a blocking P0 issue. This drives
+    // the inner loop through all 4 attempts (hard=4).
+    const worker = makeStubAdapter(
+      Array.from({ length: 4 }, (_, i) => ({
+        stdoutBody: `attempt ${String(i + 1)}\n${OK_STATUS_BLOCK}\n`,
+        sideEffect: (cwd: string) => commitWork(cwd, `a${String(i + 1)}`),
+      })),
+    );
+    const reviewer = makeStubAdapter(
+      Array.from({ length: 4 }, () => ({
+        stdoutBody: fence(
+          'oa-review',
+          JSON.stringify({
+            issues: [{ priority: 'P0', file: 'x.ts', finding: 'bad', suggestion: 'fix it' }],
+          }),
+        ),
+      })),
+    );
+
+    const r = await runPlan({
+      planId: sealed.id,
+      signal: new AbortController().signal,
+      workerAdapterFactory: () => worker,
+      reviewerAdapterFactory: () => reviewer,
+    });
+
+    // Step exhausts all attempts and ends blocked.
+    expect(r.outcome).toBe('partial');
+    expect(r.taskOutcomes[0]?.outcome).toBe('blocked-needs-human');
+
+    const events = await readEvents(sealed.id);
+    const stallEvents = events.filter((e) => e.kind === 'step.stall');
+
+    // Exactly ONE step.stall event, fired at attempt=3 (first crossing of soft=3).
+    expect(stallEvents).toHaveLength(1);
+    expect(stallEvents[0]).toMatchObject({
+      kind: 'step.stall',
+      taskId: f.taskId,
+      stepN: 1,
+      attempt: 3,
+      soft: 3,
+      hard: 4,
+    });
+  });
+
   // Task 2.5 — Symlink is updated across fix-loop attempts (attempt 1 → attempt 2).
   it('updates .oa-current-prompt.md symlink across fix-loop attempts', async () => {
     const f = await makeTaskFixture(REPO, REVIEWER_PROMPT, { stepCount: 1, maxLoops: 3 });

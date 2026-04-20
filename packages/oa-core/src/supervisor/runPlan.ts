@@ -257,6 +257,7 @@ async function runStep(
   events: EventWriter,
   parentSignal: AbortSignal,
   runtime: RunPlanRuntime,
+  stallEmitted: Set<string>,
 ): Promise<StepRunResult> {
   // stepStartSha is captured ONCE at step start. Per-attempt rewind restores
   // the worktree TO this sha; the reviewer's diff is `stepStartSha..HEAD`,
@@ -270,6 +271,11 @@ async function runStep(
 
   const maxLoops = intake.strategy.reviewFixLoop.maxLoops > 0 ? intake.strategy.reviewFixLoop.maxLoops : 1;
   const blockOn = intake.strategy.reviewFixLoop.blockOn;
+
+  // ADR-0015: resolved soft/hard stall thresholds, derived from maxLoops
+  // (mirrors the 0.6× heuristic from synthesizeFixContext).
+  const soft = Math.max(1, Math.ceil(maxLoops * 0.6));
+  const hard = maxLoops;
 
   let prevIssues: OaReviewIssue[] | undefined;
   let lastReviewIssues: OaReviewIssue[] = [];
@@ -305,6 +311,17 @@ async function runStep(
     }
 
     await progress.mark(taskFolder, step.n, 'running', `attempt ${String(attempt)}`);
+
+    // ADR-0015 (Task 3.4): emit step.stall at most once per step when the
+    // attempt count crosses the soft threshold. The key is `taskId:stepN`
+    // so the guard persists across the per-step attempt loop and — because
+    // stallEmitted lives per-plan-run — across multiple steps of the same
+    // task as well.
+    const stallKey = `${taskId}:${String(step.n)}`;
+    if (attempt >= soft && !stallEmitted.has(stallKey)) {
+      await events.emit({ kind: 'step.stall', taskId, stepN: step.n, attempt, soft, hard });
+      stallEmitted.add(stallKey);
+    }
 
     const dir = attemptDir(runDirAbs, taskId, step.n, attempt);
     await fs.mkdir(dir, { recursive: true });
@@ -908,6 +925,7 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
       // Per-step inner loop.
       let stepsRun = 0;
       const stepResults: StepRunResult[] = [];
+      const stallEmitted = new Set<string>();
       let taskHaltedByStep = false;
       // When a non-review gate fails under markBlocked policy, the worktree
       // may carry uncommitted side-effects from the failed worker. Continuing
@@ -950,6 +968,7 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
           events,
           supervisorAc.signal,
           runtime,
+          stallEmitted,
         );
         stepsRun += 1;
         stepResults.push(stepResult);
