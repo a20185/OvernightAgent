@@ -63,6 +63,19 @@ export interface AgentRunResult {
   stdoutCapHit: boolean;
   killedBy: 'timeout' | 'stdoutCap' | 'signal' | null;
   sessionId?: string;
+  /**
+   * ADR-0017 — adapter detected a rate-limit signature in the run output.
+   * Supervisor wraps this in a backoff-and-retry loop before the verify
+   * pipeline sees the result. Undefined = no detection performed / no signal
+   * found; adapters that don't implement detection leave this unset.
+   */
+  rateLimited?: boolean;
+  /**
+   * ADR-0017 — provider-supplied retry-after hint in ms. Only meaningful
+   * when `rateLimited === true`. Undefined = use the supervisor's
+   * configured default wait.
+   */
+  retryAfterMs?: number;
 }
 
 /**

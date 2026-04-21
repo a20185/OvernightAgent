@@ -5,7 +5,7 @@
 [![Node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/typescript-6.x-blue)](https://www.typescriptlang.org/)
 [![pnpm](https://img.shields.io/badge/pnpm-9.x-orange)](https://pnpm.io/)
-[![Tests](https://img.shields.io/badge/tests-488%20passing-success)](#development)
+[![Tests](https://img.shields.io/badge/tests-519%20passing-success)](#development)
 [![Status](https://img.shields.io/badge/status-v0-lightgrey)](#status--v0)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -71,7 +71,7 @@ less great at 8-hour queues where:
   verify command → AI reviewer. Any gate fails → fix-loop or mark blocked.
 - **Fix-loop with context injection.** Reviewer findings are spliced into
   the next attempt's prompt, so the agent sees exactly what to address.
-- **Structured event stream.** `runs/<planId>/events.jsonl` with 31 typed
+- **Structured event stream.** `runs/<planId>/events.jsonl` with 34 typed
   event kinds (Zod-validated via `EventSchema`). One line per event,
   append-only, `O_APPEND`-atomic.
 - **Clean resume.** Detect stale pidfile → rewind in-flight worktrees →
@@ -102,6 +102,19 @@ less great at 8-hour queues where:
   adapter subprocess in a `sandbox-exec` Seatbelt profile — kernel-level
   filesystem confinement that prevents the agent from reading secrets or
   writing outside the worktree. Opt-in for v0.2 (ADR-0016).
+- **Rate-limit backoff.** When an adapter run is rate-limited (claude
+  stream-json `rate_limit_error` / `overloaded_error` events; codex /
+  opencode stderr-matched `429` / quota / overloaded phrases), the
+  supervisor sleeps on any provider-supplied `retry-after` hint (or the
+  configured default) and re-invokes the **same prompt** without
+  advancing the verify attempt counter. Transport failures no longer
+  cascade into `blocked-needs-human`. Defaults: 60 s wait, 3 retries;
+  override via `plan.overrides.rateLimitBackoff` (ADR-0017).
+- **Stream-json-aware tail parser.** `parseTail` auto-detects Claude's
+  `--output-format stream-json` capture and concatenates assistant
+  `text` blocks before running the `oa-status` / `oa-review` fence
+  regex, so the tail gate sees the real user-visible output instead of
+  JSON-escaped newlines.
 - **Multi-agent.** One CLI, three executors. Pick your executor + reviewer
   independently per task; mix claude-opus for the hard parts and
   codex/opencode for the grind.
@@ -340,7 +353,7 @@ Everything interesting was argued out in writing before it was coded:
 
 - [**Design doc**](docs/plans/2026-04-18-overnight-agent-taskmanager-design.md) — full §1–§8 system design
 - [**Implementation plan**](docs/plans/2026-04-18-overnight-agent-taskmanager-implementation.md) — the 13-phase roadmap this repo was built against
-- [**ADRs 0001–0016**](docs/adr/) — every major decision with context + alternatives:
+- [**ADRs 0001–0017**](docs/adr/) — every major decision with context + alternatives:
 
 | ADR | Topic |
 |---|---|
@@ -360,6 +373,7 @@ Everything interesting was argued out in writing before it was coded:
 | 0014 | Scoped npm publish, cycle break, bundled shims |
 | 0015 | Harness hardening: compact-recovery hook, stall detection, error budget |
 | 0016 | macOS sandbox-exec profile around adapter runs |
+| 0017 | Rate-limit detection + backoff around adapter runs |
 
 ---
 
@@ -367,7 +381,7 @@ Everything interesting was argued out in writing before it was coded:
 
 ```sh
 pnpm -r build        # compile every package (oa-cli also bundles shims)
-pnpm -r test         # vitest — 488 tests across 5 packages
+pnpm -r test         # vitest — 519 tests across 5 packages
 pnpm -r lint         # eslint
 pnpm -r typecheck    # tsc --noEmit
 ```
@@ -412,11 +426,12 @@ pnpm refuses to publish from a dirty working tree; commit first. The scope
 ## Status — v0.2
 
 All 64 sub-tasks across Phases 0–12 plus v0.2 hardening features are
-complete; 488 tests pass.
+complete; 519 tests pass.
 Published to npm under `@soulerou` (see [ADR-0014](docs/adr/0014-scoped-publish-and-bundled-shims.md)).
 
-**v0.2 adds** (see [ADR-0015](docs/adr/0015-harness-hardening-post-compact-stall-budget.md) +
-[ADR-0016](docs/adr/0016-macos-sandbox-exec-profile.md)):
+**v0.2 adds** (see [ADR-0015](docs/adr/0015-harness-hardening-post-compact-stall-budget.md),
+[ADR-0016](docs/adr/0016-macos-sandbox-exec-profile.md), and
+[ADR-0017](docs/adr/0017-rate-limit-backoff.md)):
 
 - Compact-recovery hook for Claude Code (auto-re-injects context after compaction)
 - Stall detection with soft/hard attempt thresholds + `step.stall` event
@@ -425,6 +440,11 @@ Published to npm under `@soulerou` (see [ADR-0014](docs/adr/0014-scoped-publish-
 - `skipped` task status for budget-exhausted tasks
 - macOS sandbox-exec isolation (`oa run --sandbox`)
 - Supervisor-set env vars `OA_TASK_DIR` + `OA_CURRENT_PROMPT` per adapter spawn
+- Rate-limit detection + backoff wrapper (`step.ratelimit.wait` /
+  `.retry` / `.give_up` events; plan override `rateLimitBackoff:
+  { defaultWaitMs, maxRetries, maxWaitMs? }`)
+- Stream-json-aware tail parser (unwraps Claude's `--output-format
+  stream-json` before the `oa-status` / `oa-review` fence regex runs)
 
 **Known v0 limits** (slated for post-v0 follow-up):
 

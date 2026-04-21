@@ -6,8 +6,10 @@
 # the adapter's session-id parser MUST tolerate non-JSON lines without throwing.
 #
 # Behaviour is selectable via env vars set by the test:
-#   MOCK_CLAUDE_NO_SESSION=1 → omit the init event (parser should return undefined)
-#   MOCK_CLAUDE_EMPTY=1      → emit nothing at all (parser should return undefined)
+#   MOCK_CLAUDE_NO_SESSION=1    → omit the init event (parser should return undefined)
+#   MOCK_CLAUDE_EMPTY=1         → emit nothing at all (parser should return undefined)
+#   MOCK_CLAUDE_RATELIMITED=1   → emit a rate_limit_error event with retry_after_seconds
+#   MOCK_CLAUDE_OVERLOADED=1    → emit an overloaded_error result event (no retry-after)
 if [ -n "$MOCK_CLAUDE_EMPTY" ]; then
   exit 0
 fi
@@ -16,4 +18,10 @@ if [ -z "$MOCK_CLAUDE_NO_SESSION" ]; then
 fi
 echo 'this is a malformed line that is not JSON'
 echo '{"type":"text","text":"hello from mock claude"}'
+if [ -n "$MOCK_CLAUDE_RATELIMITED" ]; then
+  echo '{"type":"error","error":{"type":"rate_limit_error","message":"rate_limit: 45 requests per minute"},"retry_after_seconds":45}'
+fi
+if [ -n "$MOCK_CLAUDE_OVERLOADED" ]; then
+  echo '{"type":"result","subtype":"error_overloaded","message":"API overloaded"}'
+fi
 exit 0

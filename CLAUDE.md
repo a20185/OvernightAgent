@@ -13,7 +13,7 @@ All commands run from repo root unless noted.
 ```sh
 pnpm install
 pnpm -r build                       # compile every package (oa-cli also bundles shims)
-pnpm -r test                        # vitest run, all packages (~488 tests)
+pnpm -r test                        # vitest run, all packages (~519 tests)
 pnpm -r lint                        # eslint src + test
 pnpm -r typecheck                   # tsc -p . --noEmit
 
@@ -56,7 +56,7 @@ Verification gate before claiming a phase done: `pnpm -r typecheck && pnpm -r li
 
 **State root** is `$OA_HOME` (default `$HOME/.oa/`). All per-task, per-plan, per-run state lives under there — see the "State layout" tree in README. Every JSON shape carries `schemaVersion: 1` and is written via `writeJsonAtomic` / `writeFileAtomic` (temp + rename).
 
-**Event stream** (`runs/<planId>/events.jsonl`) is the single source of truth for what happened — SUMMARY.md is rendered from it, `oa status` reads it when the socket is down, and `oa tail` follows it live. 31 typed event kinds (v0.2 added `step.stall`, `plan.budget.warn`, `plan.budget.exhausted`), Zod-validated via `EventSchema`.
+**Event stream** (`runs/<planId>/events.jsonl`) is the single source of truth for what happened — SUMMARY.md is rendered from it, `oa status` reads it when the socket is down, and `oa tail` follows it live. 34 typed event kinds (v0.2 added `step.stall`, `plan.budget.warn`, `plan.budget.exhausted`, `step.ratelimit.wait`, `step.ratelimit.retry`, `step.ratelimit.give_up`), Zod-validated via `EventSchema`.
 
 ## House rules (enforced, not optional)
 
@@ -88,4 +88,4 @@ Verification gate before claiming a phase done: `pnpm -r typecheck && pnpm -r li
 - `HANDOFF.md` / `PROGRESS.md` — session audit trail; phase-by-phase completion.
 - `docs/plans/2026-04-18-overnight-agent-taskmanager-design.md` — full §1–§8 system design.
 - `docs/plans/2026-04-18-overnight-agent-taskmanager-implementation.md` — the 13-phase roadmap this repo was built against.
-- `docs/adr/0001`–`0016` — every major decision with context + alternatives. ADR-0014 is the publish + shim-bundling decision. ADR-0015 covers harness hardening (compact-recovery, stall detection, error budget). ADR-0016 covers macOS sandbox-exec.
+- `docs/adr/0001`–`0017` — every major decision with context + alternatives. ADR-0014 is the publish + shim-bundling decision. ADR-0015 covers harness hardening (compact-recovery, stall detection, error budget). ADR-0016 covers macOS sandbox-exec. ADR-0017 covers rate-limit detection + backoff.

@@ -51,6 +51,8 @@ export const adapter: AgentAdapter = {
       opts.model,
       '--output-format',
       'stream-json',
+      '--verbose',
+      '--dangerously-skip-permissions',
       ...opts.extraArgs,
     ];
 
@@ -73,7 +75,17 @@ export const adapter: AgentAdapter = {
     // logs that absence rather than failing the step.
     const sessionId = await parseSessionIdFromStreamJson(opts.stdoutPath);
 
-    return sessionId === undefined ? result : { ...result, sessionId };
+    // ADR-0017 — scan the same stream-json capture for rate-limit signatures
+    // so the supervisor's backoff wrapper can retry without mutating the
+    // prompt. Same "walk once after spawn" pattern as session_id parsing.
+    const ratelimit = await parseRateLimitFromStreamJson(opts.stdoutPath);
+
+    return {
+      ...result,
+      ...(sessionId !== undefined ? { sessionId } : {}),
+      ...(ratelimit.rateLimited ? { rateLimited: true } : {}),
+      ...(ratelimit.retryAfterMs !== undefined ? { retryAfterMs: ratelimit.retryAfterMs } : {}),
+    };
   },
 };
 
@@ -98,6 +110,102 @@ export const adapter: AgentAdapter = {
  * propagate is intentional — they signal a host-level problem the supervisor
  * should see, not a content-level absence the adapter should mask.
  */
+/**
+ * ADR-0017 — best-effort rate-limit detector for claude's stream-json output.
+ *
+ * Signals we match (all inside JSON lines, any line order):
+ *   - `{"type":"result","subtype":"error_*"}` terminal events whose subtype
+ *     contains "rate_limit", "overload", or the generic retry-worthy "server_error".
+ *   - Embedded API error objects of shape
+ *     `{"type":"error","error":{"type":"rate_limit_error"|"overloaded_error",...}}`.
+ *     These can be nested inside message content or surfaced as top-level
+ *     events depending on the CLI version — we accept both.
+ *   - `retry_after_seconds` / `retry-after` fields on the matched object,
+ *     converted to milliseconds. First hit wins.
+ *
+ * Returns `{rateLimited:false}` when no signal is found. NEVER throws on
+ * content — only propagates true host-level read errors (same contract as
+ * `parseSessionIdFromStreamJson`).
+ */
+async function parseRateLimitFromStreamJson(
+  stdoutPath: string,
+): Promise<{ rateLimited: boolean; retryAfterMs?: number }> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(stdoutPath, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { rateLimited: false };
+    throw err;
+  }
+  if (raw.length === 0) return { rateLimited: false };
+
+  let rateLimited = false;
+  let retryAfterMs: number | undefined;
+
+  // Recursive-ish walker implemented iteratively via a stack. Bounded by the
+  // stdoutCapBytes caller contract — we never explode on unbounded nesting.
+  const inspect = (node: unknown): void => {
+    if (rateLimited && retryAfterMs !== undefined) return;
+    if (node === null || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const item of node) inspect(item);
+      return;
+    }
+    const obj = node as Record<string, unknown>;
+
+    // Top-level result/error event shapes.
+    if (typeof obj.type === 'string') {
+      if (obj.type === 'error') {
+        const err = obj.error;
+        if (err !== null && typeof err === 'object') {
+          const errType = (err as { type?: unknown }).type;
+          if (
+            typeof errType === 'string' &&
+            /(rate[_-]?limit|overload)/i.test(errType)
+          ) {
+            rateLimited = true;
+          }
+        }
+      } else if (obj.type === 'result' && typeof obj.subtype === 'string') {
+        if (/(rate[_-]?limit|overload)/i.test(obj.subtype)) {
+          rateLimited = true;
+        }
+      }
+    }
+
+    // Retry-after hints. Accept both snake_case and dash forms; first hit wins.
+    if (retryAfterMs === undefined) {
+      const seconds = obj['retry_after_seconds'] ?? obj['retry-after'];
+      if (typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0) {
+        retryAfterMs = Math.floor(seconds * 1000);
+      } else if (typeof seconds === 'string' && /^\d+$/.test(seconds)) {
+        retryAfterMs = Number.parseInt(seconds, 10) * 1000;
+      }
+    }
+
+    for (const value of Object.values(obj)) inspect(value);
+  };
+
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    inspect(parsed);
+    if (rateLimited && retryAfterMs !== undefined) break;
+  }
+
+  return rateLimited
+    ? retryAfterMs !== undefined
+      ? { rateLimited: true, retryAfterMs }
+      : { rateLimited: true }
+    : { rateLimited: false };
+}
+
 async function parseSessionIdFromStreamJson(stdoutPath: string): Promise<string | undefined> {
   let raw: string;
   try {

@@ -37,6 +37,8 @@ afterEach(async () => {
   else process.env.PATH = ORIGINAL_PATH;
   delete process.env.MOCK_CLAUDE_NO_SESSION;
   delete process.env.MOCK_CLAUDE_EMPTY;
+  delete process.env.MOCK_CLAUDE_RATELIMITED;
+  delete process.env.MOCK_CLAUDE_OVERLOADED;
   await fs.rm(TMP, { recursive: true, force: true });
 });
 
@@ -93,6 +95,41 @@ describe('oa-adapter-claude', () => {
     const result = await adapter.run(opts);
     expect(result.exitCode).toBe(0);
     expect(result.sessionId).toBeUndefined();
+  });
+
+  // ADR-0017 — rate-limit detection. The adapter scans the same stream-json
+  // capture it already parses for session_id and sets `rateLimited: true` +
+  // `retryAfterMs` (when present) on AgentRunResult. Clean runs never surface
+  // the flag so the supervisor's backoff wrapper is a no-op in the common path.
+  it('run() sets rateLimited=true with retryAfterMs when a rate_limit_error event is present', async () => {
+    const opts = await makeOpts({
+      env: { MOCK_CLAUDE_RATELIMITED: '1' },
+    });
+    process.env.MOCK_CLAUDE_RATELIMITED = '1';
+    const result = await adapter.run(opts);
+    expect(result.exitCode).toBe(0);
+    expect(result.rateLimited).toBe(true);
+    // 45s in the fixture → 45_000ms via retry_after_seconds conversion.
+    expect(result.retryAfterMs).toBe(45_000);
+  });
+
+  it('run() sets rateLimited=true without retryAfterMs for an overloaded result event', async () => {
+    const opts = await makeOpts({
+      env: { MOCK_CLAUDE_OVERLOADED: '1' },
+    });
+    process.env.MOCK_CLAUDE_OVERLOADED = '1';
+    const result = await adapter.run(opts);
+    expect(result.exitCode).toBe(0);
+    expect(result.rateLimited).toBe(true);
+    expect(result.retryAfterMs).toBeUndefined();
+  });
+
+  it('run() leaves rateLimited/retryAfterMs unset on a clean run', async () => {
+    const opts = await makeOpts();
+    const result = await adapter.run(opts);
+    expect(result.exitCode).toBe(0);
+    expect(result.rateLimited).toBeUndefined();
+    expect(result.retryAfterMs).toBeUndefined();
   });
 
   it('run() rejects relative cwd / promptPath via assertAbs', async () => {

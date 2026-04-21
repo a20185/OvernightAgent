@@ -54,6 +54,8 @@ export {
   // Sub-schemas + enums Phase 3+ writers will want to compose with (S2).
   ReviewFixLoopSchema,
   ParallelSchema,
+  // ADR-0017 — rate-limit backoff config consumed by the supervisor wrapper.
+  RateLimitBackoffSchema,
   // ADR-0015 stall detection: soft/hard attempt thresholds (Task 3.1).
   VerifyConfigSchema,
   AttemptsSchema,
@@ -100,6 +102,7 @@ export type {
   StepProgress,
   ProgressDoc,
   Attempts,
+  RateLimitBackoff,
 } from './schemas.js';
 // Tail-message parser (ADR-0008, Task 6.1). Pure function: extract the LAST
 // fenced ```oa-status / ```oa-review block, JSON-parse, validate. Consumed by
@@ -162,6 +165,22 @@ export type {
 // types above are the entire adapter-author public API.
 export { spawnHeadless } from './adapter/spawn.js';
 export type { SpawnOpts, SpawnControl } from './adapter/spawn.js';
+// ADR-0017 — rate-limit backoff. `detectRateLimitInStderr` is the shared
+// regex-based detector used by adapters whose CLIs lack structured error
+// events (codex, opencode). `runAdapterWithRateLimitBackoff` is the
+// supervisor-side retry wrapper that sleeps on `rateLimited: true` results
+// and retries up to `config.maxRetries` without advancing the verify
+// attempt counter. See ADR-0017 for the full contract.
+export {
+  detectRateLimitInStderr,
+  runAdapterWithRateLimitBackoff,
+} from './adapter/rateLimit.js';
+export type {
+  RateLimitDetection,
+  RateLimitBackoffContext,
+  RateLimitEventEmitter,
+  RunWithRateLimitBackoffArgs,
+} from './adapter/rateLimit.js';
 // Adapter registry (Task 5.4). Lazy-loads `oa-adapter-<id>` packages and
 // caches each resolved instance. `__resetAdapterCacheForTest` is exported
 // alongside but is, as the name says, test-only — production callers should

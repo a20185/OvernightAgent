@@ -1,5 +1,5 @@
 import * as fs from 'node:fs/promises';
-import { assertAbs, spawnHeadless } from '@soulerou/oa-core';
+import { assertAbs, detectRateLimitInStderr, spawnHeadless } from '@soulerou/oa-core';
 import type { AgentAdapter, AgentRunOpts, AgentRunResult } from '@soulerou/oa-core';
 
 /**
@@ -29,6 +29,7 @@ export const adapter: AgentAdapter = {
 
     const args = [
       'exec',
+      '--full-auto',
       '--model',
       opts.model,
       '--prompt-file',
@@ -36,7 +37,7 @@ export const adapter: AgentAdapter = {
       ...opts.extraArgs,
     ];
 
-    return spawnHeadless({
+    const result = await spawnHeadless({
       command: 'codex',
       args,
       cwd: opts.cwd,
@@ -48,7 +49,32 @@ export const adapter: AgentAdapter = {
       signal: opts.signal,
       onSpawned: opts.onSpawned,
     });
+
+    // ADR-0017 — codex doesn't emit structured error events, so we sniff the
+    // captured stderr for common rate-limit phrases. Same contract as the
+    // claude adapter: undefined = no detection / no signal; supervisor's
+    // backoff wrapper short-circuits. Failure to read the stderr file (e.g.
+    // spawn crashed before creating it) leaves detection untouched.
+    const detection = await detectRateLimitFromStderrPath(opts.stderrPath);
+    return {
+      ...result,
+      ...(detection.rateLimited ? { rateLimited: true } : {}),
+      ...(detection.retryAfterMs !== undefined ? { retryAfterMs: detection.retryAfterMs } : {}),
+    };
   },
 };
+
+async function detectRateLimitFromStderrPath(
+  stderrPath: string,
+): Promise<{ rateLimited: boolean; retryAfterMs?: number }> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(stderrPath, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { rateLimited: false };
+    throw err;
+  }
+  return detectRateLimitInStderr(raw);
+}
 
 export default adapter;

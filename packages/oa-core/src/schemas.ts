@@ -328,6 +328,22 @@ export const StepsSchema = z.object({
 // the two below, but a plan author may need others later — keep open.
 // -----------------------------------------------------------------------------
 
+// ADR-0017 — Rate-limit backoff config. `defaultWaitMs` is the fallback wait
+// when the adapter has no provider-supplied retry-after hint. `maxRetries: 0`
+// means "detect but never retry" (emit events, propagate the single run as
+// a failure). `maxWaitMs` caps a misbehaving adapter that reports an
+// unreasonably large retry-after (e.g. 10 minutes); without a cap, a single
+// step could silently eat the overnight budget.
+export const RateLimitBackoffSchema = z
+  .object({
+    defaultWaitMs: z.number().int().positive(),
+    maxRetries: z.number().int().nonnegative(),
+    maxWaitMs: z.number().int().positive().optional(),
+  })
+  .strict();
+
+export type RateLimitBackoff = z.infer<typeof RateLimitBackoffSchema>;
+
 const PlanOverridesSchema = z
   .object({
     planBudgetSec: z.number().int().positive().optional(),
@@ -337,6 +353,7 @@ const PlanOverridesSchema = z
     commitMode: CommitMode.optional(),
     onFailure: OnFailure.optional(),
     reviewFixLoop: ReviewFixLoopSchema.optional(),
+    rateLimitBackoff: RateLimitBackoffSchema.optional(),
   })
   .passthrough();
 
@@ -602,6 +619,34 @@ const PlanBudgetExhausted = EventBase.extend({
   threshold: z.number().int().nonnegative(),
 }).passthrough();
 
+// ADR-0017 — Rate-limit backoff events. `attempt` here is the ratelimit retry
+// counter (1, 2, 3…), SEPARATE from the verify attempt counter. See ADR-0017
+// "Verify attempt counter is untouched".
+const StepRatelimitWait = EventBase.extend({
+  kind: z.literal('step.ratelimit.wait'),
+  taskId: IdSchema,
+  stepN: z.number().int().nonnegative(),
+  attempt: z.number().int().positive(),
+  waitMs: z.number().int().nonnegative(),
+  source: z.string(),
+  retryAfterMs: z.number().int().nonnegative().optional(),
+}).passthrough();
+
+const StepRatelimitRetry = EventBase.extend({
+  kind: z.literal('step.ratelimit.retry'),
+  taskId: IdSchema,
+  stepN: z.number().int().nonnegative(),
+  attempt: z.number().int().positive(),
+}).passthrough();
+
+const StepRatelimitGiveUp = EventBase.extend({
+  kind: z.literal('step.ratelimit.give_up'),
+  taskId: IdSchema,
+  stepN: z.number().int().nonnegative(),
+  attempt: z.number().int().positive(),
+  reason: z.string(),
+}).passthrough();
+
 export const EventSchema = z.discriminatedUnion('kind', [
   RunStart,
   RunStop,
@@ -634,6 +679,9 @@ export const EventSchema = z.discriminatedUnion('kind', [
   DaemonSignal,
   PlanBudgetWarn,
   PlanBudgetExhausted,
+  StepRatelimitWait,
+  StepRatelimitRetry,
+  StepRatelimitGiveUp,
 ]);
 
 // -----------------------------------------------------------------------------

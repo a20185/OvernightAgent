@@ -31,9 +31,20 @@ import { runBootstrap } from './bootstrap.js';
 import { openEventWriter, type EventWriter } from '../events/writer.js';
 import { readAll } from '../events/reader.js';
 import { getAdapter } from '../adapter/registry.js';
+import { runAdapterWithRateLimitBackoff } from '../adapter/rateLimit.js';
 import { serve } from './controlSocket.js';
 import type { AgentAdapter, AgentRunControl } from '../adapter/types.js';
+import type { RateLimitBackoff } from '../schemas.js';
 import { renderSandboxProfile } from '../sandbox/render.js';
+
+// ADR-0017 — fallback rate-limit config used when the plan doesn't override
+// `overrides.rateLimitBackoff`. One-minute default wait matches typical RPM
+// windows; three retries tolerates a brief provider incident without
+// blocking the run indefinitely.
+const DEFAULT_RATE_LIMIT_BACKOFF: RateLimitBackoff = {
+  defaultWaitMs: 60_000,
+  maxRetries: 3,
+};
 
 /**
  * Task 7.3 — Supervisor outer loop (sequential v0).
@@ -263,6 +274,7 @@ async function runStep(
   parentSignal: AbortSignal,
   runtime: RunPlanRuntime,
   stallEmitted: Set<string>,
+  rateLimitConfig: RateLimitBackoff,
 ): Promise<StepRunResult> {
   // stepStartSha is captured ONCE at step start. Per-attempt rewind restores
   // the worktree TO this sha; the reviewer's diff is `stepStartSha..HEAD`,
@@ -421,25 +433,36 @@ async function runStep(
     let workerResult;
     const workerStart = Date.now();
     try {
-      workerResult = await workerAdapter.run({
-        cwd: worktreeInfo.absRoot,
-        promptPath,
-        model: intake.executor.model,
-        extraArgs: intake.executor.extraArgs,
-        env: {
-          ...process.env as Record<string, string>,
-          OA_TASK_DIR: taskFolder,
-          OA_CURRENT_PROMPT: promptPath,
+      workerResult = await runAdapterWithRateLimitBackoff({
+        adapter: workerAdapter,
+        opts: {
+          cwd: worktreeInfo.absRoot,
+          promptPath,
+          model: intake.executor.model,
+          extraArgs: intake.executor.extraArgs,
+          env: {
+            ...process.env as Record<string, string>,
+            OA_TASK_DIR: taskFolder,
+            OA_CURRENT_PROMPT: promptPath,
+          },
+          timeoutSec: intake.strategy.stepTimeoutSec,
+          stdoutCapBytes: intake.strategy.stepStdoutCapBytes,
+          stdoutPath,
+          stderrPath,
+          signal: stepAc.signal,
+          onSpawned: (control) => {
+            runtime.activeSpawn = control;
+          },
+          ...(sandboxProfilePath !== undefined ? { sandboxProfile: sandboxProfilePath } : {}),
         },
-        timeoutSec: intake.strategy.stepTimeoutSec,
-        stdoutCapBytes: intake.strategy.stepStdoutCapBytes,
-        stdoutPath,
-        stderrPath,
-        signal: stepAc.signal,
-        onSpawned: (control) => {
-          runtime.activeSpawn = control;
+        config: rateLimitConfig,
+        context: { taskId, stepN: step.n, verifyAttempt: attempt },
+        events: {
+          emit: async (e) => {
+            await events.emit(e);
+          },
         },
-        ...(sandboxProfilePath !== undefined ? { sandboxProfile: sandboxProfilePath } : {}),
+        abortSignal: stepAc.signal,
       });
     } finally {
       runtime.activeSpawn = null;
@@ -805,6 +828,13 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
     runtime.budgetDeadlineMs = budgetDeadline;
     const isBudgetExhausted = (): boolean => Date.now() >= budgetDeadline;
 
+    // (6c) ADR-0017 — Rate-limit backoff config. Plan-level override takes
+    //      precedence; otherwise fall back to the supervisor default (60s /
+    //      3 retries). Resolved once here and passed down to `runStep` so
+    //      every attempt shares the same policy without re-reading the plan.
+    const rateLimitConfig: RateLimitBackoff =
+      sealed.overrides.rateLimitBackoff ?? DEFAULT_RATE_LIMIT_BACKOFF;
+
     // (6b) ADR-0015 — Error budget (graduated blocked-task counter). Scan the
     //      existing events.jsonl for pre-existing `step.end(status: 'blocked')`
     //      events so the count is durable across `oa rerun` / resume. The budget
@@ -1029,6 +1059,7 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
           supervisorAc.signal,
           runtime,
           stallEmitted,
+          rateLimitConfig,
         );
         stepsRun += 1;
         stepResults.push(stepResult);
