@@ -18,6 +18,14 @@ import type { ZodType } from 'zod';
  *
  * Behavior is fixed by the design:
  *
+ *   - If stdout looks like Claude's `--output-format stream-json` (the first
+ *     non-empty line parses as a JSON object with a string `type` field),
+ *     concatenate every assistant-message text block in order into a single
+ *     newline-joined string and run the fence regex on THAT. Without this,
+ *     the fence's real `\n` around the info-string and closing backticks is
+ *     JSON-escaped to the two-byte `\\n` sequence in the raw capture, and the
+ *     regex — which anchors on real newlines — never matches. Plain-text
+ *     stdout (codex / opencode) is unchanged.
  *   - Find ALL fenced blocks of the requested kind. Agents routinely embed
  *     example fences in their narrative ("here is how I'll report status…")
  *     before emitting the real terminal one.
@@ -52,6 +60,15 @@ export function parseTail(
   stdoutText: string,
   kind: 'oa-status' | 'oa-review',
 ): ParseTailResult<unknown> {
+  // Claude's `--output-format stream-json` (used by the claude adapter so the
+  // supervisor can recover `session_id` from the init event) writes one JSON
+  // object per line. Fences are embedded inside JSON string values where
+  // newlines are `\\n` escapes, so the fence regex below — which requires
+  // real newlines — never matches the raw capture. Detect that shape and
+  // unwrap to the user-visible assistant text before running the regex.
+  const unwrapped = extractAssistantTextFromStreamJson(stdoutText);
+  const haystack = unwrapped ?? stdoutText;
+
   // Fence regex breakdown:
   //   (^|\n)            — fence opener must start a line. Anchoring to start-
   //                       of-line stops `wrap```oa-status` (no real-world
@@ -73,7 +90,7 @@ export function parseTail(
   // `g` is required for `matchAll`.
   const fenceRe = new RegExp(`(?:^|\\n)\`\`\`${kind}[ \\t]*\\n([\\s\\S]*?)\\n\`\`\`(?=\\n|$)`, 'g');
 
-  const matches = Array.from(stdoutText.matchAll(fenceRe));
+  const matches = Array.from(haystack.matchAll(fenceRe));
   if (matches.length === 0) {
     return { ok: false, reason: `no ${kind} block found in output` };
   }
@@ -103,4 +120,78 @@ export function parseTail(
     return { ok: false, reason: `${kind} block failed schema: ${result.error.message}` };
   }
   return { ok: true, value: result.data };
+}
+
+/**
+ * Detects Claude-style stream-json (one JSON object per line, each carrying a
+ * string `type` field) and returns the concatenated user-visible text —
+ * every `text` block from every `type:"assistant"` message, in order, joined
+ * with `\n`. Returns `null` when the input doesn't look like stream-json so
+ * the caller falls back to treating stdout as plain text (codex/opencode).
+ *
+ * Detection is intentionally cheap: we only probe the first non-empty line.
+ * If that line parses as an object with `typeof type === "string"`, we
+ * commit to stream-json mode and walk every line. Subsequent lines that
+ * fail to parse are skipped silently — matching the permissiveness of
+ * `parseSessionIdFromStreamJson` in the claude adapter, which is the only
+ * other place in the repo that reads this format.
+ *
+ * Non-text assistant content (tool_use, thinking, tool_result…) is ignored.
+ * The ADR-0008 fence lives inside `content[].type === "text"` blocks; that's
+ * the only payload that can carry an `oa-status` or `oa-review` block.
+ */
+function extractAssistantTextFromStreamJson(raw: string): string | null {
+  if (raw.length === 0) return null;
+
+  const lines = raw.split('\n');
+  let firstNonEmpty: string | undefined;
+  for (const line of lines) {
+    if (line.trim().length > 0) {
+      firstNonEmpty = line;
+      break;
+    }
+  }
+  if (firstNonEmpty === undefined) return null;
+
+  let probe: unknown;
+  try {
+    probe = JSON.parse(firstNonEmpty);
+  } catch {
+    return null;
+  }
+  if (
+    typeof probe !== 'object' ||
+    probe === null ||
+    !('type' in probe) ||
+    typeof (probe as { type: unknown }).type !== 'string'
+  ) {
+    return null;
+  }
+
+  const chunks: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (typeof parsed !== 'object' || parsed === null) continue;
+    const obj = parsed as { type?: unknown; message?: unknown };
+    if (obj.type !== 'assistant') continue;
+    const message = obj.message;
+    if (typeof message !== 'object' || message === null) continue;
+    const content = (message as { content?: unknown }).content;
+    if (!Array.isArray(content)) continue;
+    for (const item of content) {
+      if (typeof item !== 'object' || item === null) continue;
+      const it = item as { type?: unknown; text?: unknown };
+      if (it.type === 'text' && typeof it.text === 'string') {
+        chunks.push(it.text);
+      }
+    }
+  }
+  return chunks.join('\n');
 }

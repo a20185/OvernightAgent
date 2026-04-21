@@ -137,6 +137,139 @@ describe('parseTail oa-status', () => {
   });
 });
 
+// -----------------------------------------------------------------------------
+// Stream-json input (Claude adapter, `--output-format stream-json`).
+//
+// The fence is embedded inside an assistant message's text block, so the raw
+// capture contains `...\\n\`\`\`oa-status\\n{...}\\n\`\`\`...` as a JSON
+// string value — no real newlines around the fence for the existing regex to
+// anchor on. parseTail must detect the stream-json shape, concatenate every
+// assistant text block, and run the fence regex on THAT. Plain-text stdout
+// (the codex / opencode path) must not regress.
+// -----------------------------------------------------------------------------
+
+describe('parseTail stream-json (Claude adapter)', () => {
+  // Minimal stream-json line writer — matches the real shape claude emits:
+  // one JSON object per line with a string `type` and (for assistants) a
+  // `message.content[]` array of `{type:"text"|"tool_use"|..., ...}` items.
+  const systemInit = JSON.stringify({
+    type: 'system',
+    subtype: 'init',
+    session_id: 'abc-123',
+  });
+  const assistantText = (text: string) =>
+    JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text }] },
+    });
+  const assistantToolUse = JSON.stringify({
+    type: 'assistant',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }],
+    },
+  });
+  const userToolResult = JSON.stringify({
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 't1', content: 'file.txt' }],
+    },
+  });
+
+  // (s1) Reproduces the p_2026-04-21_4rs6 failure mode: the real fence lives
+  // inside an assistant text block, so raw-bytes fence matching fails — but
+  // parseTail must unwrap stream-json and find it.
+  it('extracts the oa-status fence from an assistant text block', () => {
+    const finalText =
+      'Step done.\n\n```oa-status\n{"status":"done","summary":"shipped"}\n```';
+    const stream = [systemInit, assistantToolUse, userToolResult, assistantText(finalText)].join(
+      '\n',
+    );
+    const r = parseTail(stream, 'oa-status');
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toEqual({ status: 'done', summary: 'shipped' });
+  });
+
+  // (s2) Fence split across two consecutive assistant text blocks. Chunks must
+  // be joined with `\n` so the closing backticks land on their own line and
+  // the regex's `\n```(?=\n|$)` anchor holds.
+  it('joins assistant text blocks with newlines so a fence split across blocks still matches', () => {
+    const a = 'Preamble.\n\n```oa-status\n{"status":"done","summary":"joined"}';
+    const b = '```\ntrailing';
+    const stream = [systemInit, assistantText(a), assistantText(b)].join('\n');
+    const r = parseTail(stream, 'oa-status');
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toEqual({ status: 'done', summary: 'joined' });
+  });
+
+  // (s3) Last-fence-wins still holds across stream-json: an example fence in
+  // an earlier assistant text must not poison a real terminal fence in a
+  // later one.
+  it('honors last-fence-wins across multiple assistant text blocks', () => {
+    const example = 'Heres how Ill report:\n```oa-status\n{"status":"done","summary":"example"}\n```';
+    const real =
+      'OK done:\n```oa-status\n{"status":"done","summary":"real terminal"}\n```';
+    const stream = [systemInit, assistantText(example), assistantText(real)].join('\n');
+    const r = parseTail(stream, 'oa-status');
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toEqual({ status: 'done', summary: 'real terminal' });
+  });
+
+  // (s4) Non-text assistant content (tool_use) and user tool_result messages
+  // must be skipped — only `content[].type === "text"` carries the fence.
+  it('ignores tool_use and user tool_result messages', () => {
+    const finalText = 'done\n```oa-status\n{"status":"done","summary":"ok"}\n```';
+    const stream = [
+      systemInit,
+      assistantToolUse,
+      userToolResult,
+      assistantToolUse,
+      userToolResult,
+      assistantText(finalText),
+    ].join('\n');
+    const r = parseTail(stream, 'oa-status');
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toEqual({ status: 'done', summary: 'ok' });
+  });
+
+  // (s5) Stream-json with no assistant text containing a fence → "no <kind>"
+  // reason, same shape as the plain-text miss. (The regression we shipped
+  // against was this exact case reporting correctly.)
+  it('returns ok=false with "no oa-status" when stream-json has no fence in any text block', () => {
+    const stream = [systemInit, assistantToolUse, userToolResult].join('\n');
+    const r = parseTail(stream, 'oa-status');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/no oa-status block/);
+  });
+
+  // (s6) A line that looks like JSON but is not an object with a string
+  // `type` field (e.g. a bare number, string, array) must NOT trigger
+  // stream-json mode — it stays plain-text and the fence regex runs on raw
+  // bytes. This guards against accidental classification of plain-text
+  // output that happens to begin with `{` or `[`.
+  it('does not classify input as stream-json when the first line lacks a string `type`', () => {
+    const md = `[1,2,3]\n\n\`\`\`oa-status\n{"status":"done","summary":"plain"}\n\`\`\``;
+    const r = parseTail(md, 'oa-status');
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toEqual({ status: 'done', summary: 'plain' });
+  });
+
+  // (s7) oa-review path — the reviewer is typically also claude, so the same
+  // unwrap must work for review output.
+  it('unwraps stream-json for oa-review blocks as well', () => {
+    const finalText =
+      'review:\n```oa-review\n{"issues":[{"priority":"P2","file":"a.ts","finding":"nit"}]}\n```';
+    const stream = [systemInit, assistantText(finalText)].join('\n');
+    const r = parseTail(stream, 'oa-review');
+    expect(r.ok).toBe(true);
+    if (r.ok)
+      expect(r.value).toEqual({
+        issues: [{ priority: 'P2', file: 'a.ts', finding: 'nit' }],
+      });
+  });
+});
+
 describe('parseTail oa-review', () => {
   // (1, review variant) — symmetry with status: missing block ⇒ "no
   // oa-review" reason.
