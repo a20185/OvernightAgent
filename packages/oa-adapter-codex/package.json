@@ -1,6 +1,6 @@
 {
   "name": "@soulerou/oa-adapter-codex",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Headless codex AgentAdapter for OvernightAgent.",
   "keywords": [
     "overnight-agent",

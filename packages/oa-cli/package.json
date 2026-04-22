@@ -1,6 +1,6 @@
 {
   "name": "@soulerou/oa-cli",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "OvernightAgent CLI — the `oa` binary. Run coding agents (claude/codex/opencode) unattended overnight against a queue of task plans.",
   "keywords": [
     "overnight-agent",
