@@ -99,16 +99,27 @@ export type { RunPlanResult as ResumePlanResult } from './runPlan.js';
 async function refuseIfLiveElseCleanPidfile(planId: string): Promise<void> {
   const pidPath = pidfile(planId);
   if (!isStale(planId)) {
-    // Live pid. Re-read the file so the thrown message names it.
-    let livePid: string = '?';
+    // Live pid. Re-read the file so we can (a) name it in the error and
+    // (b) tell ownership apart from "some other supervisor owns it."
+    let livePidRaw: string = '?';
+    let livePid = NaN;
     try {
-      const raw = await fs.readFile(pidPath, 'utf8');
-      livePid = raw.trim();
+      livePidRaw = (await fs.readFile(pidPath, 'utf8')).trim();
+      livePid = Number.parseInt(livePidRaw, 10);
     } catch {
       /* swallow — we still refuse */
     }
+    // Self-owned pidfile: the detached-rerun path (cli `rerun --detach` →
+    // entry.ts) acquires the pidfile with the daemon's own pid *before*
+    // delegating to resumePlan, so without this guard the daemon would
+    // self-refuse. Foreground `oa rerun` never hits this branch because
+    // no acquire runs first — both paths must converge on "refuse only a
+    // foreign live owner."
+    if (Number.isFinite(livePid) && livePid === process.pid) {
+      return;
+    }
     throw new Error(
-      `resumePlan refusing: pidfile at ${pidPath} points to live pid ${livePid} ` +
+      `resumePlan refusing: pidfile at ${pidPath} points to live pid ${livePidRaw} ` +
         `(planId=${planId}). Stop the running supervisor first.`,
     );
   }

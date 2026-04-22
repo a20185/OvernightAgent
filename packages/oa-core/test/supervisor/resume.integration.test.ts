@@ -417,14 +417,20 @@ describe('resumePlan integration (Task 7.8)', () => {
     await expect(fs.access(pidPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  // (4) Live pidfile refused.
-  it('live pidfile refused: resume throws with pid + planId in message', async () => {
+  // (4) Foreign live pidfile refused.
+  it('foreign live pidfile refused: resume throws with pid + planId in message', async () => {
     const f = await makeTaskFixture(REPO, REVIEWER_PROMPT, { stepCount: 1 });
     const sealed = await plan.create({ taskListIds: [f.taskId] });
 
     const pidPath = pidfile(sealed.id);
     await fs.mkdir(path.dirname(pidPath), { recursive: true });
-    await fs.writeFile(pidPath, `${String(process.pid)}\n`, 'utf8');
+    // Use the parent process's pid as a "foreign live" pid. It's guaranteed
+    // to be alive (it invoked us) and != process.pid, so the self-owned
+    // short-circuit (added in 0.4.2 for the rerun --detach self-race) does
+    // not apply and the refuse branch fires as intended.
+    const foreignPid = process.ppid;
+    expect(foreignPid).not.toBe(process.pid);
+    await fs.writeFile(pidPath, `${String(foreignPid)}\n`, 'utf8');
 
     try {
       await expect(
@@ -434,12 +440,37 @@ describe('resumePlan integration (Task 7.8)', () => {
           workerAdapterFactory: () => makeStubAdapter([{}]),
           reviewerAdapterFactory: () => makeStubAdapter([{}]),
         }),
-      ).rejects.toThrow(new RegExp(`${String(process.pid)}.*${sealed.id}|${sealed.id}.*${String(process.pid)}`));
+      ).rejects.toThrow(new RegExp(`${String(foreignPid)}.*${sealed.id}|${sealed.id}.*${String(foreignPid)}`));
     } finally {
       // afterEach rm -rf TMP will clean up but pidfile sits under
       // <oaHome>/runs/<planId>/oa.pid which is under TMP — safe.
       await fs.unlink(pidPath).catch(() => undefined);
     }
+  });
+
+  // (4b) Self-owned live pidfile tolerated — `oa rerun --detach` regression
+  // guard. Before 0.4.2 the detached daemon acquired the pidfile with its
+  // own pid, then resumePlan's refuse-if-live check read that back and
+  // self-refused, so `rerun --detach` was silently broken.
+  it('self-owned live pidfile: resume proceeds without refusing', async () => {
+    const f = await makeTaskFixture(REPO, REVIEWER_PROMPT, { stepCount: 1 });
+    const sealed = await plan.create({ taskListIds: [f.taskId] });
+
+    const pidPath = pidfile(sealed.id);
+    await fs.mkdir(path.dirname(pidPath), { recursive: true });
+    await fs.writeFile(pidPath, `${String(process.pid)}\n`, 'utf8');
+
+    // Should NOT throw. We don't care what resumePlan returns here (stub
+    // adapters resolve whatever shape), only that it doesn't bail on the
+    // self-owned pidfile check.
+    await expect(
+      resumePlan({
+        planId: sealed.id,
+        signal: new AbortController().signal,
+        workerAdapterFactory: () => makeStubAdapter([{}]),
+        reviewerAdapterFactory: () => makeStubAdapter([{}]),
+      }),
+    ).resolves.toBeDefined();
   });
 
   // (5) Already-done tasks are NOT re-executed on resume.

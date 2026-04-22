@@ -2,6 +2,12 @@
 
 All notable changes to the OvernightAgent monorepo are recorded here. We follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and SemVer across all `@soulerou/*` packages.
 
+## [0.4.2] — 2026-04-22
+
+### Fixed
+
+- **`oa rerun --detach` self-refused on the pidfile** — the detached daemon entry acquired the pidfile with its own PID, then `resumePlan`'s refuse-if-live check read that pidfile, saw a "live" PID (itself), and emitted `run.error "resumePlan refusing: pidfile … points to live pid <self>"` before exiting. Detached reruns were silently broken (foreground `oa rerun` was unaffected, no acquire happens there). The refuse-if-live check now distinguishes self-owned pidfiles from foreign live owners; regression test added.
+
 ## [0.4.1] — 2026-04-22
 
 ### Added
