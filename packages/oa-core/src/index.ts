@@ -156,6 +156,7 @@ export type {
   AgentRunOpts,
   AgentRunResult,
   AgentRunControl,
+  AgentHeartbeat,
 } from './adapter/types.js';
 // Headless subprocess primitive every adapter wraps (Task 5.2). Exposed on the
 // public surface so adapter packages (oa-adapter-claude, codex, opencode) can

@@ -547,6 +547,12 @@ const StepVerifyReviewFail = EventBase.extend({
   blocking: z.array(z.unknown()),
 }).passthrough();
 
+const StepFindingsDeferred = EventBase.extend({
+  kind: z.literal('step.findings.deferred'),
+  ...attemptRef,
+  issueCount: z.number().int().nonnegative(),
+}).passthrough();
+
 const StepFixSynthesized = EventBase.extend({
   kind: z.literal('step.fix.synthesized'),
   ...attemptRef,
@@ -647,6 +653,20 @@ const StepRatelimitGiveUp = EventBase.extend({
   reason: z.string(),
 }).passthrough();
 
+// Liveness heartbeat emitted while an adapter child is running. `subtype`
+// discriminates the payload — see AgentHeartbeat in adapter/types.ts for the
+// canonical set. `passthrough()` here is load-bearing: per-subtype fields
+// vary, and future adapter versions may add subtypes we haven't codified yet.
+// `source='supervisor'` marks the dead-air fallback emitted by runPlan when
+// no adapter heartbeat has fired within the configured window — tells
+// post-mortem readers "adapter went silent" vs "adapter is producing output".
+const StepHeartbeat = EventBase.extend({
+  kind: z.literal('step.heartbeat'),
+  ...attemptRef,
+  subtype: z.string(),
+  source: z.enum(['adapter', 'supervisor']).optional(),
+}).passthrough();
+
 export const EventSchema = z.discriminatedUnion('kind', [
   RunStart,
   RunStop,
@@ -669,6 +689,7 @@ export const EventSchema = z.discriminatedUnion('kind', [
   StepVerifyCmdFail,
   StepVerifyReviewOk,
   StepVerifyReviewFail,
+  StepFindingsDeferred,
   StepFixSynthesized,
   StepTimeout,
   StepStdoutCapHit,
@@ -682,6 +703,7 @@ export const EventSchema = z.discriminatedUnion('kind', [
   StepRatelimitWait,
   StepRatelimitRetry,
   StepRatelimitGiveUp,
+  StepHeartbeat,
 ]);
 
 // -----------------------------------------------------------------------------

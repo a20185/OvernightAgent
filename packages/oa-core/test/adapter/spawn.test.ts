@@ -228,6 +228,105 @@ describe('spawnHeadless', () => {
       spawnHeadless({ ...base, cwd: TMP, stdoutPath, stderrPath: 'rel/stderr.log' }),
     ).rejects.toThrow(/non-absolute/);
   });
+
+  it('invokes onStdoutLine once per newline-terminated line, preserves partials across chunks', async () => {
+    const { stdoutPath, stderrPath } = paths();
+    const lines: string[] = [];
+    const ac = new AbortController();
+    // Node script prints two partial writes then a newline then more — exercises
+    // the mid-chunk boundary case where one `data` event ends without \n and
+    // the next picks up the partial.
+    await spawnHeadless({
+      command: process.execPath,
+      args: [
+        '-e',
+        `process.stdout.write('alpha\\nbet');
+         setTimeout(() => { process.stdout.write('a\\ngamma\\n'); process.exit(0); }, 30);`,
+      ],
+      cwd: TMP,
+      timeoutSec: 5,
+      stdoutCapBytes: 1_000_000,
+      stdoutPath,
+      stderrPath,
+      signal: ac.signal,
+      onStdoutLine: (l) => lines.push(l),
+    });
+    expect(lines).toEqual(['alpha', 'beta', 'gamma']);
+    // Capture file still receives every byte — line tap is observation-only.
+    const captured = await fs.readFile(stdoutPath, 'utf8');
+    expect(captured).toBe('alpha\nbeta\ngamma\n');
+  });
+
+  it('flushes the trailing partial line on natural exit when no final newline was written', async () => {
+    const { stdoutPath, stderrPath } = paths();
+    const lines: string[] = [];
+    const ac = new AbortController();
+    await spawnHeadless({
+      command: process.execPath,
+      args: ['-e', "process.stdout.write('first\\nsecond-no-newline'); process.exit(0);"],
+      cwd: TMP,
+      timeoutSec: 5,
+      stdoutCapBytes: 1_000_000,
+      stdoutPath,
+      stderrPath,
+      signal: ac.signal,
+      onStdoutLine: (l) => lines.push(l),
+    });
+    // Without trailing-flush, 'second-no-newline' would be lost. Codex output
+    // doesn't always \n-terminate, so this case is load-bearing for the
+    // codex adapter's byte accumulator.
+    expect(lines).toEqual(['first', 'second-no-newline']);
+  });
+
+  it('onStderrLine receives stderr lines independently of stdout', async () => {
+    const { stdoutPath, stderrPath } = paths();
+    const stdoutLines: string[] = [];
+    const stderrLines: string[] = [];
+    const ac = new AbortController();
+    await spawnHeadless({
+      command: process.execPath,
+      args: [
+        '-e',
+        "process.stdout.write('out1\\n'); process.stderr.write('err1\\nerr2\\n'); process.exit(0);",
+      ],
+      cwd: TMP,
+      timeoutSec: 5,
+      stdoutCapBytes: 1_000_000,
+      stdoutPath,
+      stderrPath,
+      signal: ac.signal,
+      onStdoutLine: (l) => stdoutLines.push(l),
+      onStderrLine: (l) => stderrLines.push(l),
+    });
+    expect(stdoutLines).toEqual(['out1']);
+    expect(stderrLines).toEqual(['err1', 'err2']);
+  });
+
+  it('swallows exceptions thrown by onStdoutLine (parser-bug isolation)', async () => {
+    const { stdoutPath, stderrPath } = paths();
+    const seen: string[] = [];
+    const ac = new AbortController();
+    // Parser throws on first line; second line must still reach the capture
+    // file AND the handler (handler isolation is per-call, not per-stream).
+    const result = await spawnHeadless({
+      command: process.execPath,
+      args: ['-e', "console.log('one'); console.log('two'); process.exit(0);"],
+      cwd: TMP,
+      timeoutSec: 5,
+      stdoutCapBytes: 1_000_000,
+      stdoutPath,
+      stderrPath,
+      signal: ac.signal,
+      onStdoutLine: (l) => {
+        if (l === 'one') throw new Error('boom');
+        seen.push(l);
+      },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(seen).toEqual(['two']);
+    const captured = await fs.readFile(stdoutPath, 'utf8');
+    expect(captured).toBe('one\ntwo\n');
+  });
 });
 
 // -----------------------------------------------------------------------------

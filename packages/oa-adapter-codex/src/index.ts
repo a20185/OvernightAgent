@@ -1,13 +1,21 @@
 import * as fs from 'node:fs/promises';
 import { assertAbs, detectRateLimitInStderr, spawnHeadless } from '@soulerou/oa-core';
 import type { AgentAdapter, AgentRunOpts, AgentRunResult } from '@soulerou/oa-core';
+import { createCodexHeartbeatParser } from './heartbeat.js';
 
 /**
  * Headless `codex` AgentAdapter (ADR-0009). Mirrors the claude adapter's
  * shape but targets codex's `codex exec` headless mode.
  *
- * Invocation shape (verify against installed CLI at deploy time):
- *   `codex exec --model <model> --prompt-file <abs> [extraArgs...]`
+ * Invocation shape (verified against codex exec --help):
+ *   `codex exec --full-auto --model <model> [extraArgs...] <promptText>`
+ *
+ * codex's `exec` subcommand takes the prompt as a positional argument (or
+ * from stdin if omitted/`-`). It does NOT accept `--prompt-file` — an earlier
+ * revision of this adapter used that flag and failed every reviewer call with
+ * `error: unexpected argument '--prompt-file' found`. We read the prompt
+ * file into a string and pass it as the positional, matching the claude
+ * adapter's `-p <promptText>` pattern.
  *
  * codex's headless mode does not emit a per-run session_id we can parse, so
  * `supportsSessionId` returns false; the supervisor records attempts by its
@@ -19,23 +27,30 @@ import type { AgentAdapter, AgentRunOpts, AgentRunResult } from '@soulerou/oa-co
  */
 export const adapter: AgentAdapter = {
   id: 'codex',
-  defaultModel: 'gpt-5-codex',
+  defaultModel: 'gpt-5.4',
   capabilities: () => ({ supportsSessionId: false, supportsStructuredOutput: false }),
   async run(opts: AgentRunOpts): Promise<AgentRunResult> {
     assertAbs(opts.promptPath);
-    // Verify prompt file is readable before handing argv off — a missing
-    // prompt would otherwise surface as a cryptic codex error.
-    await fs.access(opts.promptPath);
+    const promptText = await fs.readFile(opts.promptPath, 'utf8');
 
+    // Prompt is passed as the trailing positional. `extraArgs` is spread
+    // before it so callers can add flags without displacing the prompt.
     const args = [
       'exec',
       '--full-auto',
       '--model',
       opts.model,
-      '--prompt-file',
-      opts.promptPath,
       ...opts.extraArgs,
+      promptText,
     ];
+
+    // Live liveness classifier — accumulates byte counts on stdout, sniffs
+    // stderr for rate-limit phrases. No-op if the caller didn't wire
+    // onHeartbeat. Codex emits no structured event stream so this is the only
+    // observability signal we can surface during the run.
+    const heartbeat = opts.onHeartbeat
+      ? createCodexHeartbeatParser({ emit: opts.onHeartbeat })
+      : undefined;
 
     const result = await spawnHeadless({
       command: 'codex',
@@ -48,7 +63,14 @@ export const adapter: AgentAdapter = {
       stderrPath: opts.stderrPath,
       signal: opts.signal,
       onSpawned: opts.onSpawned,
+      ...(heartbeat !== undefined
+        ? {
+            onStdoutLine: (line) => heartbeat.onStdoutLine(line),
+            onStderrLine: (line) => heartbeat.onStderrLine(line),
+          }
+        : {}),
     });
+    heartbeat?.flush();
 
     // ADR-0017 — codex doesn't emit structured error events, so we sniff the
     // captured stderr for common rate-limit phrases. Same contract as the

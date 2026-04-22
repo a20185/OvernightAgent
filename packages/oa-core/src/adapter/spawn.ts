@@ -26,6 +26,23 @@ export interface SpawnOpts {
   onSpawned?: (control: SpawnControl) => void;
   /** Absolute path to a sandbox-exec profile. Darwin-only; throws on other platforms. */
   sandboxProfile?: string;
+  /**
+   * Optional per-line taps for live output parsing. Invoked once per complete
+   * `\n`-terminated line as bytes arrive from the child; raw bytes still go
+   * to the capture files unchanged and the line callback is best-effort
+   * (exceptions are swallowed — see handler below — so an adapter bug in the
+   * parser can't crash the spawn). Any trailing partial buffer at child exit
+   * is flushed as one final call so adapters that emit non-terminated output
+   * (codex plain text) don't lose the tail.
+   *
+   * The callback receives the line *without* the trailing newline. Lines
+   * longer than the stdout/stderr high-water mark are split by node's own
+   * `data` chunking — the adapter is responsible for re-buffering if it
+   * needs full-line semantics for lines > ~64KB (neither claude's stream-json
+   * nor codex's text output hits that in practice).
+   */
+  onStdoutLine?: (line: string) => void;
+  onStderrLine?: (line: string) => void;
 }
 
 export type SpawnControl = AgentRunControl;
@@ -106,6 +123,11 @@ export async function spawnHeadless(opts: SpawnOpts): Promise<AgentRunResult> {
   const subprocess = execa(resolved.command, resolved.args, {
     cwd: opts.cwd,
     env: { ...process.env, ...opts.env },
+    // `stdin: 'ignore'` gives the child an immediately-closed stdin. Required
+    // for CLIs that opportunistically read stdin when they detect a pipe —
+    // e.g. `codex exec` appends piped stdin as a `<stdin>` block and blocks
+    // waiting for EOF, hanging every reviewer call to the step timeout.
+    stdin: 'ignore',
     stdout: 'pipe',
     stderr: 'pipe',
     // We deliberately do NOT pass `signal: opts.signal` to execa: we want to
@@ -140,6 +162,44 @@ export async function spawnHeadless(opts: SpawnOpts): Promise<AgentRunResult> {
     }, SIGKILL_GRACE_MS).unref();
   };
 
+  // Line taps: buffer partial lines across `data` chunks and call the
+  // caller's handler once per complete `\n`-terminated line. Trailing
+  // partials are flushed in the post-exit `finally` block. Handlers are
+  // wrapped in try/catch because an adapter parser bug must not crash the
+  // spawn's data path — we prefer a quiet heartbeat gap to an unhandled
+  // exception from a best-effort live-parse.
+  let stdoutLineBuf = '';
+  let stderrLineBuf = '';
+  const feedLines = (
+    buf: string,
+    chunk: Buffer,
+    cb: ((line: string) => void) | undefined,
+  ): string => {
+    if (cb === undefined) return '';
+    const combined = buf + chunk.toString('utf8');
+    let start = 0;
+    for (;;) {
+      const nl = combined.indexOf('\n', start);
+      if (nl < 0) break;
+      const line = combined.slice(start, nl);
+      start = nl + 1;
+      try {
+        cb(line);
+      } catch {
+        // Parser exception is isolated here — see comment above.
+      }
+    }
+    return combined.slice(start);
+  };
+  const flushTail = (tail: string, cb: ((line: string) => void) | undefined): void => {
+    if (cb === undefined || tail.length === 0) return;
+    try {
+      cb(tail);
+    } catch {
+      // ditto
+    }
+  };
+
   subprocess.stdout?.on('data', (chunk: Buffer) => {
     // Sync write keeps capture-file ordering deterministic and avoids the
     // ordering hazards of interleaved async writes when the cap is hit
@@ -151,6 +211,7 @@ export async function spawnHeadless(opts: SpawnOpts): Promise<AgentRunResult> {
       // unwinding; swallow rather than crash the data handler.
     }
     stdoutBytes += chunk.length;
+    stdoutLineBuf = feedLines(stdoutLineBuf, chunk, opts.onStdoutLine);
     if (stdoutBytes >= opts.stdoutCapBytes) {
       kill('stdoutCap');
     }
@@ -162,6 +223,7 @@ export async function spawnHeadless(opts: SpawnOpts): Promise<AgentRunResult> {
     } catch {
       // Same race as stdout — see comment above.
     }
+    stderrLineBuf = feedLines(stderrLineBuf, chunk, opts.onStderrLine);
   });
 
   const timeoutHandle = setTimeout(() => {
@@ -205,6 +267,14 @@ export async function spawnHeadless(opts: SpawnOpts): Promise<AgentRunResult> {
   } finally {
     clearTimeout(timeoutHandle);
     opts.signal.removeEventListener('abort', onAbort);
+    // Flush any non-newline-terminated tail before the caller inspects
+    // capture files or the adapter runs its post-hoc parsers. Adapters that
+    // emit plain text without trailing \n (codex) would otherwise drop their
+    // last line from the live stream.
+    flushTail(stdoutLineBuf, opts.onStdoutLine);
+    flushTail(stderrLineBuf, opts.onStderrLine);
+    stdoutLineBuf = '';
+    stderrLineBuf = '';
     try {
       fs.closeSync(stdoutFd);
     } catch {

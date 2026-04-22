@@ -1,6 +1,7 @@
 import * as fs from 'node:fs/promises';
 import { assertAbs, spawnHeadless } from '@soulerou/oa-core';
 import type { AgentAdapter, AgentRunOpts, AgentRunResult } from '@soulerou/oa-core';
+import { createStreamJsonHeartbeatParser } from './heartbeat.js';
 
 /**
  * Headless `claude` AgentAdapter — first concrete implementation of the
@@ -56,6 +57,16 @@ export const adapter: AgentAdapter = {
       ...opts.extraArgs,
     ];
 
+    // Live heartbeat parser — classifies each stream-json line and forwards
+    // notable signals to opts.onHeartbeat. The post-hoc session_id +
+    // rate-limit walkers below still run against the capture file as a
+    // belt-and-braces safety net; this only adds observability during the
+    // run. If the caller didn't wire onHeartbeat, we skip line parsing
+    // entirely — no cost for adapters the supervisor didn't opt into.
+    const heartbeat = opts.onHeartbeat
+      ? createStreamJsonHeartbeatParser({ emit: opts.onHeartbeat })
+      : undefined;
+
     const result = await spawnHeadless({
       command: 'claude',
       args,
@@ -67,7 +78,12 @@ export const adapter: AgentAdapter = {
       stderrPath: opts.stderrPath,
       signal: opts.signal,
       onSpawned: opts.onSpawned,
+      ...(heartbeat !== undefined ? { onStdoutLine: (line) => heartbeat.onLine(line) } : {}),
     });
+
+    // Drain any debounced assistant.delta so the supervisor's last seen
+    // counter matches the child's actual total bytes on exit.
+    heartbeat?.flush();
 
     // Parse session_id AFTER the spawn returns — the capture file is now
     // closed and complete. Best-effort: if the file is missing, empty, or
@@ -166,8 +182,14 @@ async function parseRateLimitFromStreamJson(
             rateLimited = true;
           }
         }
-      } else if (obj.type === 'result' && typeof obj.subtype === 'string') {
-        if (/(rate[_-]?limit|overload)/i.test(obj.subtype)) {
+      } else if (obj.type === 'result') {
+        // Claude CLI v2.x emits rate-limit exits as:
+        //   {type:"result", subtype:"success", is_error:true, api_error_status:429}
+        // The subtype is "success" (!), so we match on is_error + api_error_status.
+        if (obj.is_error === true && (obj.api_error_status === 429 || obj.api_error_status === '429')) {
+          rateLimited = true;
+        }
+        if (typeof obj.subtype === 'string' && /(rate[_-]?limit|overload)/i.test(obj.subtype)) {
           rateLimited = true;
         }
       }

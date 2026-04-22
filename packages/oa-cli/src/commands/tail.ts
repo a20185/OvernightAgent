@@ -11,11 +11,17 @@ async function latestPlanId(): Promise<string | null> {
   return chosen?.id ?? null;
 }
 
-function formatPretty(line: string): string {
+// Event kinds that are noisy in interactive `oa tail` but valuable in
+// `events.jsonl` for post-mortem analysis. Pretty output filters them; `--raw`
+// passes everything through verbatim so operators can still inspect with jq.
+const QUIET_KINDS = new Set(['step.heartbeat']);
+
+function formatPretty(line: string): string | null {
   try {
     const obj = JSON.parse(line) as Record<string, unknown>;
-    const ts = String(obj.ts ?? '');
     const kind = String(obj.kind ?? '?');
+    if (QUIET_KINDS.has(kind)) return null;
+    const ts = String(obj.ts ?? '');
     return `${ts} ${kind} ${JSON.stringify(obj)}`;
   } catch {
     return line;
@@ -37,7 +43,13 @@ export function registerTailCommand(program: Command): void {
       }
       const logPath = path.resolve(runDir(planId), 'events.jsonl');
       const emit = (line: string): void => {
-        process.stdout.write(`${opts.raw === true ? line : formatPretty(line)}\n`);
+        if (opts.raw === true) {
+          process.stdout.write(`${line}\n`);
+          return;
+        }
+        const pretty = formatPretty(line);
+        if (pretty === null) return;
+        process.stdout.write(`${pretty}\n`);
       };
 
       let buffer = '';

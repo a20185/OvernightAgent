@@ -46,6 +46,14 @@ const DEFAULT_RATE_LIMIT_BACKOFF: RateLimitBackoff = {
   maxRetries: 3,
 };
 
+// Dead-air watchdog: if no adapter heartbeat and no ratelimit event has
+// fired within this window, the supervisor emits a synthetic `step.heartbeat`
+// with `source='supervisor'` so post-mortems can distinguish "adapter
+// silently wedged" from "adapter producing output we just didn't log."
+// Picked to match RPM-reset granularity — 60 s means we get at least one
+// dead-air signal per minute of silence without flooding events.jsonl.
+const DEAD_AIR_INTERVAL_MS = 60_000;
+
 /**
  * Task 7.3 — Supervisor outer loop (sequential v0).
  *
@@ -430,6 +438,30 @@ async function runStep(
       sandboxProfilePath = sbPath;
     }
 
+    // Heartbeat / dead-air watchdog. `lastActivityMs` is touched by every
+    // adapter heartbeat and every ratelimit wait/retry event — the timer only
+    // fires a synthetic dead-air event when nothing else has signalled for
+    // `DEAD_AIR_INTERVAL_MS`. Unref'd so it never keeps the event loop alive
+    // past a natural exit; cleared in the `finally` alongside activeSpawn.
+    let lastActivityMs = Date.now();
+    const touchActivity = (): void => {
+      lastActivityMs = Date.now();
+    };
+    const deadAirTimer = setInterval(() => {
+      const elapsed = Date.now() - lastActivityMs;
+      if (elapsed < DEAD_AIR_INTERVAL_MS) return;
+      void events.emit({
+        kind: 'step.heartbeat',
+        taskId,
+        stepN: step.n,
+        attempt,
+        subtype: 'dead-air',
+        source: 'supervisor',
+        elapsedMsSinceLastActivity: elapsed,
+      });
+    }, DEAD_AIR_INTERVAL_MS);
+    deadAirTimer.unref();
+
     let workerResult;
     const workerStart = Date.now();
     try {
@@ -453,18 +485,40 @@ async function runStep(
           onSpawned: (control) => {
             runtime.activeSpawn = control;
           },
+          onHeartbeat: (h) => {
+            // Remap AgentHeartbeat → step.heartbeat event. `kind` is reserved
+            // for the event discriminator, so the adapter's kind moves to
+            // `subtype` and the rest of the payload is spread verbatim.
+            touchActivity();
+            const { kind: subtype, ...rest } = h;
+            void events.emit({
+              kind: 'step.heartbeat',
+              taskId,
+              stepN: step.n,
+              attempt,
+              subtype,
+              source: 'adapter',
+              ...rest,
+            });
+          },
           ...(sandboxProfilePath !== undefined ? { sandboxProfile: sandboxProfilePath } : {}),
         },
         config: rateLimitConfig,
         context: { taskId, stepN: step.n, verifyAttempt: attempt },
         events: {
+          // The rate-limit wrapper emits step.ratelimit.{wait,retry,give_up}
+          // through this shim — those are real supervisor activity, so we
+          // also bump the dead-air watermark here. Otherwise a run stuck in
+          // rate-limit backoff would false-alarm as dead air every minute.
           emit: async (e) => {
+            touchActivity();
             await events.emit(e);
           },
         },
         abortSignal: stepAc.signal,
       });
     } finally {
+      clearInterval(deadAirTimer);
       runtime.activeSpawn = null;
     }
     await events.emit({
@@ -549,21 +603,28 @@ async function runStep(
     await events.emit({ kind: 'step.verify.tail.ok', taskId, stepN: step.n, attempt });
 
     // ---- Pre-merge gate 2: commit-since-step-start -------------------------
-    const commitGate = await verifyGates.verifyCommit(worktreeInfo.absRoot, stepStartSha);
-    if (!commitGate.ok) {
-      await events.emit({
-        kind: 'step.verify.commit.fail',
-        taskId,
-        stepN: step.n,
-        attempt,
-        reason: commitGate.reason,
-      });
-      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'failed' });
-      stepOutcome = intake.strategy.onFailure === 'halt' ? 'failed' : 'blocked';
-      clearParentAbort();
-      break;
+    // Honors `intake.verify.requireCommit`: validation-only steps (e.g. "verify
+    // existing infra meets spec X") correctly produce no diff, so demanding a
+    // new commit would block them forever. When requireCommit is false we skip
+    // the gate entirely — no event is emitted either way, matching the
+    // "didn't run" semantics callers expect.
+    if (intake.verify.requireCommit) {
+      const commitGate = await verifyGates.verifyCommit(worktreeInfo.absRoot, stepStartSha);
+      if (!commitGate.ok) {
+        await events.emit({
+          kind: 'step.verify.commit.fail',
+          taskId,
+          stepN: step.n,
+          attempt,
+          reason: commitGate.reason,
+        });
+        await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'failed' });
+        stepOutcome = intake.strategy.onFailure === 'halt' ? 'failed' : 'blocked';
+        clearParentAbort();
+        break;
+      }
+      await events.emit({ kind: 'step.verify.commit.ok', taskId, stepN: step.n, attempt });
     }
-    await events.emit({ kind: 'step.verify.commit.ok', taskId, stepN: step.n, attempt });
 
     // ---- Pre-merge gate 3: user verify command -----------------------------
     // Abort check before verifyCmd: this gate spawns the user's verify script
@@ -668,6 +729,7 @@ async function runStep(
       stepN: step.n,
       attempt,
       blocking: reviewResult.blocking as unknown[],
+      ...(reviewResult.reason !== undefined ? { reason: reviewResult.reason } : {}),
     });
 
     if (attempt < maxLoops) {
@@ -686,10 +748,20 @@ async function runStep(
       clearParentAbort();
       // Loop continues.
     } else {
-      // Final attempt exhausted with blocking issues remaining. No fix is
-      // synthesized: the loop ends here.
-      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'blocked' });
-      stepOutcome = 'blocked';
+      // Final attempt exhausted with blocking issues remaining. Defer them
+      // to FINDINGS.md instead of blocking the task — the next step's prompt
+      // reads FINDINGS.md ("Findings so far") and can pick up the slack.
+      const deferredSummary = formatDeferredIssues(step.n, attempt, lastReviewIssues);
+      await findings.append(taskFolder, deferredSummary);
+      await events.emit({
+        kind: 'step.findings.deferred',
+        taskId,
+        stepN: step.n,
+        attempt,
+        issueCount: reviewResult.blocking.length,
+      });
+      await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'done' });
+      stepOutcome = 'done';
       clearParentAbort();
       break;
     }
@@ -1253,4 +1325,15 @@ export async function runPlan(opts: RunPlanOpts): Promise<RunPlanResult> {
     taskOutcomes,
     durationMs: Date.now() - startedAt,
   };
+}
+
+function formatDeferredIssues(stepN: number, attempts: number, issues: OaReviewIssue[]): string {
+  const lines = [`### Deferred review issues from step ${stepN} (${attempts} attempts exhausted)\n`];
+  for (const iss of issues) {
+    const loc = iss.line ? `${iss.file}:${iss.line}` : iss.file;
+    lines.push(`- [${iss.priority}] ${loc} — ${iss.finding}`);
+    if (iss.suggestion) lines.push(`  Suggestion: ${iss.suggestion}`);
+  }
+  lines.push('\nThese issues were not resolved within the review-fix loop. Address in a future pass or manually.');
+  return lines.join('\n');
 }

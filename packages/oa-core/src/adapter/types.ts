@@ -41,11 +41,59 @@ export interface AgentRunOpts {
   onSpawned?: (control: AgentRunControl) => void;
   /** Absolute path to a per-attempt sandbox-exec profile (macOS only). See ADR-0016. */
   sandboxProfile?: string;
+  /**
+   * Live progress callback invoked by the adapter as it parses the child's
+   * output stream. The supervisor forwards each heartbeat to `events.jsonl`
+   * as `step.heartbeat` so operators can distinguish "child is working slowly"
+   * from "child is wedged" without waiting for `step.agent.exit`.
+   *
+   * Contract: best-effort, never blocks the adapter. Adapters that don't
+   * implement live parsing simply never call this. Emission cadence is
+   * adapter-specific — some events (session.init, tool.use, api.retry,
+   * ratelimited) fire on every signal; high-frequency ones (assistant.delta)
+   * are debounced inside the adapter.
+   */
+  onHeartbeat?: (h: AgentHeartbeat) => void;
 }
 
 export interface AgentRunControl {
   killNow(): void;
 }
+
+/**
+ * Live heartbeat payload emitted by adapters while the child runs. The set is
+ * a discriminated union; forward-compat consumers should default-case to
+ * "ignore / emit as-is" to tolerate new `kind`s added in later adapter
+ * versions.
+ *
+ * - `session.init` — agent-assigned session/request id parsed from first
+ *   structured event. Fires once. Claude: `session_id` from `type=system
+ *   subtype=init`; codex doesn't emit one (adapter skips).
+ * - `assistant.delta` — cumulative bytes of assistant-authored output
+ *   (text + thinking) since session start. Debounced per-adapter; used purely
+ *   as a liveness signal — a growing counter means the child is producing.
+ * - `tool.use` — a tool invocation by the agent. Emitted every time; useful
+ *   for seeing *what* the agent is doing, not just that it's alive.
+ * - `api.retry` — the child's SDK is retrying a provider request. This is the
+ *   single most useful signal for post-mortem of rate-limit storms like the
+ *   one that surfaced the need for this heartbeat in the first place.
+ * - `ratelimited` — structured rate-limit exit detected mid-stream (parallel
+ *   to the post-hoc detection the supervisor already does — we emit this for
+ *   observability; the authoritative rate-limit decision still comes from the
+ *   adapter's return value).
+ */
+export type AgentHeartbeat =
+  | { kind: 'session.init'; sessionId: string; model?: string }
+  | { kind: 'assistant.delta'; cumulativeBytes: number }
+  | { kind: 'tool.use'; name: string }
+  | {
+      kind: 'api.retry';
+      attempt: number;
+      maxRetries?: number;
+      errorStatus?: number | null;
+      retryDelayMs?: number;
+    }
+  | { kind: 'ratelimited'; retryAfterMs?: number };
 
 /**
  * Outcome of a single `AgentAdapter.run` invocation.

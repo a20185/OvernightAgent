@@ -25,6 +25,7 @@ interface PerTaskAccum {
   stepsFinal: Map<number, string>; // stepN -> final status
   stepsAttempts: Map<number, number>; // stepN -> attempt count
   stepsStalled: Map<number, boolean>; // stepN -> saw step.stall
+  stepsDeferred: Map<number, number>; // stepN -> deferred issue count
   bootstrapStartedAtMs: number | null;
   bootstrapEndedAtMs: number | null;
   bootstrapOk: boolean | null;
@@ -88,6 +89,7 @@ export function renderSummary(opts: RenderSummaryOpts): string {
         stepsFinal: new Map(),
         stepsAttempts: new Map(),
         stepsStalled: new Map(),
+        stepsDeferred: new Map(),
         bootstrapStartedAtMs: null,
         bootstrapEndedAtMs: null,
         bootstrapOk: null,
@@ -170,6 +172,14 @@ export function renderSummary(opts: RenderSummaryOpts): string {
         const stepN = typeof e.stepN === 'number' ? e.stepN : null;
         if (taskId === null || stepN === null) break;
         tk(taskId).stepsStalled.set(stepN, true);
+        break;
+      }
+      case 'step.findings.deferred': {
+        const taskId = typeof e.taskId === 'string' ? e.taskId : null;
+        const stepN = typeof e.stepN === 'number' ? e.stepN : null;
+        const issueCount = typeof e.issueCount === 'number' ? e.issueCount : 0;
+        if (taskId === null || stepN === null) break;
+        tk(taskId).stepsDeferred.set(stepN, issueCount);
         break;
       }
       case 'step.verify.review.fail': {
@@ -274,6 +284,10 @@ export function renderSummary(opts: RenderSummaryOpts): string {
         } else if (status === 'blocked') {
           statusCol = 'blocked ⚠ stalled→blocked';
         }
+      }
+      const deferred = t.stepsDeferred.get(n);
+      if (deferred !== undefined && deferred > 0) {
+        statusCol = `${statusCol} ⚠ ${deferred} issues deferred`;
       }
       const stepDirRel = `${linkBase}/${taskId}/step-${String(n).padStart(2, '0')}`;
       const promptRel = `${stepDirRel}/attempt-01/prompt.md`;

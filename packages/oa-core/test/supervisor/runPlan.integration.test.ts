@@ -1011,9 +1011,10 @@ describe('runPlan integration (Task 7.3)', () => {
       reviewerAdapterFactory: () => reviewer,
     });
 
-    // Step exhausts all attempts and ends blocked.
-    expect(r.outcome).toBe('partial');
-    expect(r.taskOutcomes[0]?.outcome).toBe('blocked-needs-human');
+    // Step exhausts all attempts — deferred issues written to FINDINGS, step
+    // marked done, task completes (new behavior: defer instead of block).
+    expect(r.outcome).toBe('done');
+    expect(r.taskOutcomes[0]?.outcome).toBe('done');
 
     const events = await readEvents(sealed.id);
     const stallEvents = events.filter((e) => e.kind === 'step.stall');
@@ -1027,6 +1028,17 @@ describe('runPlan integration (Task 7.3)', () => {
       attempt: 3,
       soft: 3,
       hard: 4,
+    });
+
+    // Deferred issues event emitted on exhaustion.
+    const deferredEvents = events.filter((e) => e.kind === 'step.findings.deferred');
+    expect(deferredEvents).toHaveLength(1);
+    expect(deferredEvents[0]).toMatchObject({
+      kind: 'step.findings.deferred',
+      taskId: f.taskId,
+      stepN: 1,
+      attempt: 4,
+      issueCount: 1,
     });
   });
 

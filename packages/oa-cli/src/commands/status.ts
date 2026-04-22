@@ -7,7 +7,11 @@ async function latestPlanId(): Promise<string | null> {
   const plans = await plan.list();
   if (plans.length === 0) return null;
   const running = plans.find((p) => p.status === 'running');
-  const chosen = running ?? plans[plans.length - 1];
+  // `plan.list()` returns `fs.readdir` order (alphabetic on APFS). Plan IDs
+  // carry a random suffix, so that order is not chronological — pick the
+  // newest by `createdAt` (ISO strings compare correctly).
+  const newest = plans.reduce((a, b) => (a.createdAt >= b.createdAt ? a : b));
+  const chosen = running ?? newest;
   return chosen?.id ?? null;
 }
 
