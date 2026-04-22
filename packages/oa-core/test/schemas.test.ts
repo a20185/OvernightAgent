@@ -593,6 +593,14 @@ describe('EventSchema', () => {
       { kind: 'step.agent.exit', ...attemptRef, exitCode: 0, durationMs: 10 },
       { kind: 'step.verify.tail.ok', ...attemptRef },
       { kind: 'step.verify.tail.fail', ...attemptRef, reason: 'missing' },
+      // 0.4.1 — diagnostic fields are optional and additive.
+      {
+        kind: 'step.verify.tail.fail',
+        ...attemptRef,
+        reason: 'no oa-status block found in output',
+        outputBytes: 4096,
+        outputTail: 'last kilobyte of stdout...',
+      },
       { kind: 'step.verify.commit.ok', ...attemptRef },
       { kind: 'step.verify.commit.fail', ...attemptRef, reason: 'no commit' },
       { kind: 'step.verify.cmd.ok', ...attemptRef },

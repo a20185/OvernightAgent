@@ -508,10 +508,17 @@ const StepVerifyTailOk = EventBase.extend({
   ...attemptRef,
 }).passthrough();
 
+// `outputBytes` / `outputTail` added in 0.4.1 — "no oa-status block found"
+// reasons are otherwise opaque without manually tailing stdout.log. The tail
+// snippet is capped server-side (~1 KiB) so events.jsonl stays readable;
+// both fields are optional because the killed-worker branch may fire before
+// the child wrote anything.
 const StepVerifyTailFail = EventBase.extend({
   kind: z.literal('step.verify.tail.fail'),
   ...attemptRef,
   reason: z.string(),
+  outputBytes: z.number().int().nonnegative().optional(),
+  outputTail: z.string().optional(),
 }).passthrough();
 
 const StepVerifyCommitOk = EventBase.extend({

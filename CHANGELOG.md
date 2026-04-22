@@ -2,6 +2,12 @@
 
 All notable changes to the OvernightAgent monorepo are recorded here. We follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and SemVer across all `@soulerou/*` packages.
 
+## [0.4.1] — 2026-04-22
+
+### Added
+
+- **`step.verify.tail.fail` carries diagnostic stdout snippet** — new optional `outputBytes` (total bytes the child wrote) and `outputTail` (last ~1 KiB, utf8) fields let post-mortems see whether the agent emitted a malformed block, forgot it entirely, or was cut off mid-output without having to open `stdout.log`. Emitted from both sites: killed-worker tail-fail (timeout / stdout-cap / signal) and verify-tail-gate miss. Fields are optional and additive — existing event consumers are unaffected.
+
 ## [0.4.0] — 2026-04-22
 
 ### Added

@@ -54,6 +54,13 @@ const DEFAULT_RATE_LIMIT_BACKOFF: RateLimitBackoff = {
 // dead-air signal per minute of silence without flooding events.jsonl.
 const DEAD_AIR_INTERVAL_MS = 60_000;
 
+// Max bytes of captured stdout we embed in a `step.verify.tail.fail` event's
+// `outputTail` field for diagnostic purposes. Kept small so events.jsonl
+// doesn't balloon when many steps fail. 1024 covers the last few lines of
+// stream-json / plain text — enough to tell "agent forgot the tail block"
+// from "agent was cut off mid-block" without having to open stdout.log.
+const TAIL_FAIL_OUTPUT_SNIPPET_BYTES = 1024;
+
 /**
  * Task 7.3 — Supervisor outer loop (sequential v0).
  *
@@ -249,6 +256,48 @@ async function loadSteps(taskFolder: string): Promise<Steps> {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`steps.json at ${p} is corrupted: ${msg}`, { cause: err });
   }
+}
+
+/**
+ * Read the last `bytes` of a file as a utf8 string without loading the whole
+ * thing. Used by `step.verify.tail.fail` emission to embed a diagnostic
+ * snippet of the worker's stdout when the tail gate fails or the worker is
+ * killed. Best-effort: returns an empty snippet (and `size: 0`) if the file
+ * doesn't exist or read fails — a diagnostic helper must never crash the
+ * supervisor.
+ */
+async function readFileTail(
+  absPath: string,
+  bytes: number,
+): Promise<{ size: number; tail: string }> {
+  try {
+    const stat = await fs.stat(absPath);
+    const size = stat.size;
+    if (size === 0) return { size: 0, tail: '' };
+    const readLen = Math.min(bytes, size);
+    const readFrom = size - readLen;
+    const handle = await fs.open(absPath, 'r');
+    try {
+      const buf = Buffer.alloc(readLen);
+      await handle.read(buf, 0, readLen, readFrom);
+      return { size, tail: buf.toString('utf8') };
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return { size: 0, tail: '' };
+  }
+}
+
+/** Tail snippet of an already-loaded string, capped at `bytes` utf8 bytes. */
+function stringTail(s: string, bytes: number): string {
+  const total = Buffer.byteLength(s, 'utf8');
+  if (total <= bytes) return s;
+  // Slice from the end by bytes — utf8-safe because Buffer.toString handles
+  // the reverse direction cleanly; in the rare case we bisect a multi-byte
+  // char the leading replacement-character is a non-issue for diagnostics.
+  const buf = Buffer.from(s, 'utf8');
+  return buf.subarray(total - bytes).toString('utf8');
 }
 
 /** Per-attempt log/prompt directory: `<runDir>/steps/<taskId>/<n>/<attempt>`. */
@@ -565,12 +614,17 @@ async function runStep(
           bytes: intake.strategy.stepStdoutCapBytes,
         });
       }
+      // Embed a stdout snippet so post-mortems see what the child was doing
+      // right before being killed without having to open stdout.log.
+      const killedTail = await readFileTail(stdoutPath, TAIL_FAIL_OUTPUT_SNIPPET_BYTES);
       await events.emit({
         kind: 'step.verify.tail.fail',
         taskId,
         stepN: step.n,
         attempt,
         reason: `worker killed: ${workerResult.killedBy}`,
+        outputBytes: killedTail.size,
+        outputTail: killedTail.tail,
       });
       await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'failed' });
       // markBlocked / skip onFailure → step ends 'blocked' so the task is
@@ -588,12 +642,18 @@ async function runStep(
     const stdoutContent = await fs.readFile(stdoutPath, 'utf8');
     const tailGate = verifyGates.verifyTail(stdoutContent);
     if (!tailGate.ok) {
+      // Embed a stdout snippet so operators can see whether the agent emitted
+      // a malformed block, forgot it entirely, or was cut off mid-output —
+      // three different root causes the bare `reason` string can't
+      // distinguish.
       await events.emit({
         kind: 'step.verify.tail.fail',
         taskId,
         stepN: step.n,
         attempt,
         reason: tailGate.reason,
+        outputBytes: Buffer.byteLength(stdoutContent, 'utf8'),
+        outputTail: stringTail(stdoutContent, TAIL_FAIL_OUTPUT_SNIPPET_BYTES),
       });
       await events.emit({ kind: 'step.attempt.end', taskId, stepN: step.n, attempt, status: 'failed' });
       stepOutcome = intake.strategy.onFailure === 'halt' ? 'failed' : 'blocked';
