@@ -1,6 +1,6 @@
 {
   "name": "@soulerou/oa-core",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Core engine for OvernightAgent — schemas, worktree manager, four-gate verify pipeline, supervisor, events, and SUMMARY renderer.",
   "keywords": [
     "overnight-agent",
