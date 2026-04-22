@@ -71,7 +71,7 @@ less great at 8-hour queues where:
   verify command → AI reviewer. Any gate fails → fix-loop or mark blocked.
 - **Fix-loop with context injection.** Reviewer findings are spliced into
   the next attempt's prompt, so the agent sees exactly what to address.
-- **Structured event stream.** `runs/<planId>/events.jsonl` with 34 typed
+- **Structured event stream.** `runs/<planId>/events.jsonl` with 36 typed
   event kinds (Zod-validated via `EventSchema`). One line per event,
   append-only, `O_APPEND`-atomic.
 - **Clean resume.** Detect stale pidfile → rewind in-flight worktrees →
@@ -115,6 +115,21 @@ less great at 8-hour queues where:
   `text` blocks before running the `oa-status` / `oa-review` fence
   regex, so the tail gate sees the real user-visible output instead of
   JSON-escaped newlines.
+- **Live heartbeat observability.** Adapters classify their child's
+  output stream in real time and emit `step.heartbeat` events
+  (`session.init` / `api.retry` / `tool.use` / `assistant.delta` /
+  `ratelimited`) so operators can tell "agent is producing tokens
+  slowly" from "agent is wedged" without waiting for `step.agent.exit`.
+  A supervisor-side 60 s dead-air watchdog emits a synthetic heartbeat
+  when no adapter signal has fired. `oa tail` filters these in its
+  pretty view; `oa tail --raw` passes them through for analysis.
+- **Defer-to-FINDINGS on fix-loop exhaustion.** When the review-fix
+  loop runs out of attempts with blocking issues still open, remaining
+  findings are appended to the task's `FINDINGS.md` (with a
+  `step.findings.deferred` event) instead of hard-blocking the whole
+  task — the next step's prompt reads "Findings so far" and picks up
+  the slack. Opt out by tightening the `blockOn` priority gate in the
+  plan override.
 - **Multi-agent.** One CLI, three executors. Pick your executor + reviewer
   independently per task; mix claude-opus for the hard parts and
   codex/opencode for the grind.
@@ -423,15 +438,38 @@ pnpm refuses to publish from a dirty working tree; commit first. The scope
 
 ---
 
-## Status — v0.2
+## Status — v0.4
 
-All 64 sub-tasks across Phases 0–12 plus v0.2 hardening features are
-complete; 519 tests pass.
+All v0.2 hardening features are complete; 536 tests pass.
 Published to npm under `@soulerou` (see [ADR-0014](docs/adr/0014-scoped-publish-and-bundled-shims.md)).
 
-**v0.2 adds** (see [ADR-0015](docs/adr/0015-harness-hardening-post-compact-stall-budget.md),
-[ADR-0016](docs/adr/0016-macos-sandbox-exec-profile.md), and
-[ADR-0017](docs/adr/0017-rate-limit-backoff.md)):
+**v0.4 adds** (on top of ADR-0015/0016/0017):
+
+- Live heartbeat observability — adapters classify child output in real
+  time and emit `step.heartbeat` events so operators can tell a slow
+  agent from a wedged one while a run is in-flight.
+- Defer-to-FINDINGS on fix-loop exhaustion — remaining blocking
+  issues are appended to `FINDINGS.md` (+ `step.findings.deferred`
+  event) instead of hard-blocking the task.
+- `intake.verify.requireCommit` — opt out of the
+  commit-since-step-start gate for validation-only steps.
+- Codex adapter now uses a positional prompt argument (was:
+  `--prompt-file`); default model bumped to `gpt-5.4`.
+- Misc fixes: `stdin:'ignore'` on every spawn (fixes codex-exec hang);
+  claude rate-limit detector matches `result.is_error` +
+  `api_error_status=429`; `oa status` picks the latest plan by
+  `createdAt` rather than readdir order.
+
+**v0.3 added** (see [ADR-0017](docs/adr/0017-rate-limit-backoff.md)):
+
+- Rate-limit detection + supervisor backoff wrapper
+  (`step.ratelimit.wait` / `.retry` / `.give_up` events; plan override
+  `rateLimitBackoff: { defaultWaitMs, maxRetries, maxWaitMs? }`)
+- Stream-json-aware tail parser (unwraps Claude's `--output-format
+  stream-json` before the `oa-status` / `oa-review` fence regex runs)
+
+**v0.2 adds** (see [ADR-0015](docs/adr/0015-harness-hardening-post-compact-stall-budget.md)
+and [ADR-0016](docs/adr/0016-macos-sandbox-exec-profile.md)):
 
 - Compact-recovery hook for Claude Code (auto-re-injects context after compaction)
 - Stall detection with soft/hard attempt thresholds + `step.stall` event
@@ -440,11 +478,6 @@ Published to npm under `@soulerou` (see [ADR-0014](docs/adr/0014-scoped-publish-
 - `skipped` task status for budget-exhausted tasks
 - macOS sandbox-exec isolation (`oa run --sandbox`)
 - Supervisor-set env vars `OA_TASK_DIR` + `OA_CURRENT_PROMPT` per adapter spawn
-- Rate-limit detection + backoff wrapper (`step.ratelimit.wait` /
-  `.retry` / `.give_up` events; plan override `rateLimitBackoff:
-  { defaultWaitMs, maxRetries, maxWaitMs? }`)
-- Stream-json-aware tail parser (unwraps Claude's `--output-format
-  stream-json` before the `oa-status` / `oa-review` fence regex runs)
 
 **Known v0 limits** (slated for post-v0 follow-up):
 
