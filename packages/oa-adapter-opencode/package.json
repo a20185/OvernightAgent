@@ -1,6 +1,6 @@
 {
   "name": "@soulerou/oa-adapter-opencode",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Headless opencode AgentAdapter for OvernightAgent.",
   "keywords": [
     "overnight-agent",
